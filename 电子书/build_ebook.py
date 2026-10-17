@@ -41,8 +41,14 @@ PROMPT_RE = re.compile(
     r"^::: prompt[ \t]*(.+?)\s*\n\n(.*?)\n:::[ \t]*$",
     re.S | re.M,
 )
-# 行间公式块
-DISPLAY_MATH_RE = re.compile(r"^\$\$\s*\n(.*?)\n\$\$\s*$", re.S | re.M)
+# 行间公式块：多行写法 $$ 换行 ... 换行 $$，以及单行写法 $$...$$
+DISPLAY_MATH_RE = re.compile(
+    r"^\$\$[ \t]*\n(.*?)\n\$\$[ \t]*$"      # 多行
+    r"|^\$\$.+?\$\$[ \t]*$",                 # 单行
+    re.S | re.M,
+)
+# 行内公式 $...$，前后不能再接 $，避免误伤已经处理过的块级公式
+INLINE_MATH_RE = re.compile(r"(?<![$\\])\$(?!\$)([^$\n]+?)(?<![\\$])\$(?!\$)")
 
 md = markdown.Markdown(extensions=MD_EXTENSIONS)
 
@@ -60,7 +66,14 @@ def read_module_desc(mod_dir):
 
 
 def protect(text):
-    """把引导词容器与行间公式换成占位符，避免 Markdown 处理时被误伤。"""
+    """把引导词容器与数学公式换成占位符，避免 Markdown 处理时被误伤。
+
+    为什么行内公式也要保护：Markdown 会把 $...$ 里的下标（如 f_{i,t}、
+    \\rho_s）当作强调标记配成 <em>，把公式切断。2026-10-17 实测第 007 章
+    的 $$IC^{TS}_i = ...$$ 就是这样变成 "$$IC^{TS}<em...>" 的。
+
+    代码块内的 $ 不参与替换，否则 shell 变量、正则里的 $1 会被误判成功式。
+    """
     store = {}
 
     def keep(html):
@@ -80,7 +93,7 @@ def protect(text):
 
     def math_repl(m):
         # 原样保留，交给 MathJax 渲染
-        return keep("$$%s$$" % m.group(1))
+        return keep(m.group(0))
 
     # 占位符前后补空行，避免相邻块被 Markdown 合并进同一个段落
     def block_repl(fn):
@@ -89,7 +102,17 @@ def protect(text):
         return inner
 
     text = PROMPT_RE.sub(block_repl(prompt_repl), text)
-    text = DISPLAY_MATH_RE.sub(block_repl(math_repl), text)
+
+    # 按围栏代码块切分，只处理代码之外的片段
+    parts = re.split(r"(^```.*?^```[ \t]*$)", text, flags=re.S | re.M)
+    for i, seg in enumerate(parts):
+        if i % 2 == 1:            # 奇数位是代码块，保持原样
+            continue
+        # 顺序要紧：先块级 $$...$$，再行内 $...$
+        seg = DISPLAY_MATH_RE.sub(block_repl(math_repl), seg)
+        seg = INLINE_MATH_RE.sub(math_repl, seg)
+        parts[i] = seg
+    text = "".join(parts)
     return text, store
 
 

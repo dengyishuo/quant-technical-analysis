@@ -10,6 +10,7 @@
     docs/index.html                     供 GitHub Pages 发布的同名副本
 """
 
+import base64
 import json
 import re
 from pathlib import Path
@@ -138,11 +139,44 @@ def esc(s):
     )
 
 
+IMG_RE = re.compile(r'<img\s+([^>]*?)src="([^"]+)"([^>]*?)>', re.I)
+
+
+def inline_images(html):
+    """把 <img src> 换成 base64 data URI。
+
+    电子书是自包含的单文件，图片若按相对路径引用，换目录或发出去就断。
+    这里读进原图转 base64，体积只增三成左右，换来任意环境都能看。
+    找不到的图保留原样并打印提示，不静默失败。
+    """
+    def repl(m):
+        before, src, after = m.group(1), m.group(2), m.group(3)
+        if src.startswith(("data:", "http://", "https://")):
+            return m.group(0)
+        p = (ROOT / src.lstrip("./")).resolve()
+        if not p.exists():
+            p2 = (ROOT / "assets" / src.lstrip("./")).resolve()
+            p = p2 if p2.exists() else p
+        if not p.exists():
+            print("  ! 图片缺失：%s" % src)
+            return m.group(0)
+        mime = {".png": "image/png", ".jpg": "image/jpeg",
+                ".jpeg": "image/jpeg", ".svg": "image/svg+xml",
+                ".webp": "image/webp", ".gif": "image/gif"}.get(
+            p.suffix.lower(), "image/png")
+        b64 = base64.b64encode(p.read_bytes()).decode("ascii")
+        return '<img %ssrc="data:%s;base64,%s"%s>' % (before, mime, b64, after)
+
+    return IMG_RE.sub(repl, html)
+
+
 def render_body(raw):
     """Markdown 正文 -> HTML（含引导词与公式保护）。"""
     protected, store = protect(raw)
     html = md_to_html(protected)
     html = restore(html, store)
+    # 图片内联，保持单文件可分发性
+    html = inline_images(html)
     # 站外链接新窗口打开
     html = html.replace('<a href="http', '<a target="_blank" rel="noopener" href="http')
     return html
@@ -362,7 +396,14 @@ button{font-family:var(--sans); cursor:pointer}
 .chapter-body th,.chapter-body td{border:1px solid var(--rule);padding:.6rem .8rem;text-align:left;line-height:1.7}
 .chapter-body th{background:var(--paper-2);font-weight:600}
 .chapter-body hr{border:0;border-top:1px solid var(--rule);margin:2.4rem 0}
-.chapter-body img{max-width:100%;border-radius:6px}
+.chapter-body img{max-width:100%;border-radius:6px;display:block;margin:1.6rem auto .4rem;
+  border:1px solid var(--rule);background:#fff}
+.chapter-body .figcap{
+  text-align:center;font-size:.86rem;color:var(--muted);
+  margin:.2rem 0 1.8rem;line-height:1.6;
+}
+/* 宽表格在窄屏横向滚动，不挤压文字 */
+.chapter-body table{max-width:100%}
 
 /* ---------- AI 引导词 ---------- */
 .prompt{
@@ -584,11 +625,11 @@ TEMPLATE = r"""<!doctype html>
 <script>
 MathJax = {
   tex: { inlineMath: [['$','$'],['\\(','\\)']], displayMath: [['$$','$$'],['\\[','\\]']] },
-  svg: { fontCache: 'global' },
+  svg: { fontCache: 'local' },
   options: { skipHtmlTags: ['script','noscript','style','textarea','pre','code'] }
 };
 </script>
-<script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+<script>__MATHJAX__</script>
 </head>
 <body>
 
@@ -662,10 +703,22 @@ def main():
     n_py = code_counts["python"]
 
     data = json.dumps(book, ensure_ascii=False).replace("</", "<\\/")
+
+    # MathJax 内联：单文件电子书不能依赖 CDN。
+    # 读者断网、或所在网络访问 jsdelivr 受限时，公式会整片退回 $$...$$ 源码。
+    # 用 tex-svg 而非 tex-chtml：SVG 把字形直接画进路径，不需要额外下载 woff 字体。
+    mathjax_path = ROOT / "电子书" / "vendor" / "tex-svg.js"
+    if not mathjax_path.exists():
+        raise SystemExit(
+            "缺少 %s。请先执行 电子书/fetch_mathjax.sh 下载数学排版引擎。"
+            % mathjax_path.relative_to(ROOT))
+    mathjax = mathjax_path.read_text(encoding="utf-8")
+
     html = (
         TEMPLATE
         .replace("__CSS__", CSS)
         .replace("__JS__", JS)
+        .replace("__MATHJAX__", mathjax)
         .replace("__BOOK_DATA__", data)
         .replace("__TITLE__", TITLE)
         .replace("__SUBTITLE__", SUBTITLE)

@@ -6,7 +6,7 @@
 
 一本按"讲原理 → 拆解特征 → 检验能力 → 建模融合"四层递进组织的中文技术分析书稿。源稿为纯 Markdown，编译为**单文件 HTML 电子书**（封面／目录／逐章阅读／夜间模式／键盘翻页）。
 
-- **规模**：9 个模块 · 54 章 · 141 条 AI 引导词 · 231 组 R/Python 双语代码 · 约 80 万字
+- **规模**：9 个模块 · 54 章 · 141 条 AI 引导词 · 231 组 R/Python 双语代码 · 28 幅指标图 · 约 82 万字
 - **电子书**：`docs/index.html`（自包含单文件，1.62 MB，也可直接在线看，见下方「在线阅读」）
 - **代码库**：`code/R/` 与 `code/python/` 各 39 个可运行文件，从书稿自动提取
 - **数据**：`data/parquet/` 两级面板（5 只示例 / 287 只真实横截面），从本地 MySQL 导出
@@ -47,7 +47,46 @@ python3 scripts/csv_to_parquet.py      # staging → data/parquet/
 
 电子书与数据这两条链路互不依赖。只想读，克隆下来打开 `docs/index.html` 即可；只想跑代码，`data/parquet/` 与 `code/` 已经备好。
 
-依赖：`markdown`（编译电子书）、`pandas` + `pyarrow`（读写数据）、`R` 的 `DBI` + `RMySQL`（仅重建数据时需要）。公式由 CDN 上的 MathJax 渲染，首次打开需要联网。
+依赖分三类：
+
+| 用途 | 依赖 |
+|---|---|
+| 编译电子书 | Python `markdown` |
+| 读写数据 | Python `pandas` `pyarrow` |
+| 跑书里的代码 | Python 见下「eQuant 生态」；R 用 `ettr` `efactorcraft` `efincharts` 等 |
+
+公式与图片都已内联进 HTML，不依赖网络。
+
+### eQuant 生态
+
+书中全部代码调用 eQuant 系列包，不自己手写指标。两套实现同源同口径：
+
+| 语言 | 包 | 仓库 |
+|---|---|---|
+| Python | `ettr` `efactorcraft` `eclassic` `efincharts` | github.com/dengyishuo/equant-py |
+| R | `ettr` `efactorcraft` `eclassic` `efincharts` | github.com/dengyishuo/equant-r |
+
+```r
+# R：一次装齐
+pak::pak(c("dengyishuo/ettr", "dengyishuo/efactorcraft",
+           "dengyishuo/eclassic", "dengyishuo/efincharts"))
+```
+
+```bash
+# Python：从源码装（各子包独立仓库）
+git clone https://github.com/dengyishuo/equant-py
+pip install -e equant-py/ettr-py -e equant-py/efactorcraft-py \
+            -e equant-py/eclassic-py -e equant-py/efincharts-py
+```
+
+**统一数据规范**：长格式面板，一行一个「标的-日」，含 `date` / `code` / OHLCV。所有指标函数都是「进来一个面板、追加若干列」的形态，天然适配横截面与时间序列两种检验。
+
+```
+ettr.sma(df, n=[5, 20, 60])          # Python：追加 SMA_5 / SMA_20 / SMA_60
+add_sma(df, n = 20)                  # R：追加 SMA_20
+efc.ic_analysis(d, factor_cols="f")  # 横截面 IC
+ic_analysis(d, factor_cols = "f")    # R 同口径
+```
 
 产物四个：
 
@@ -57,6 +96,7 @@ python3 scripts/csv_to_parquet.py      # staging → data/parquet/
 | `电子书/build_ebook.py` | 编译脚本。运行时会在 `电子书/` 下另存一份同名 HTML（不入库，避免与 docs 重复 1.6 MB） |
 | `code/` | 全部代码的独立可运行版本，`code/README.md` 是索引 |
 | `data/parquet/` | 书中全部示例数据，`data/README.md` 是字段与口径说明 |
+| `assets/figures/` | 各章指标图，编译时内联进 HTML |
 
 ### 数据
 
@@ -67,6 +107,7 @@ python3 scripts/csv_to_parquet.py      # staging → data/parquet/
 | `panel_blue_chip.parquet` | 5 只 · 2,905 行 · 2023-01 至 2025-06 | 正文示例 |
 | `panel.parquet` | 287 只 · 302,757 行 · 2021-06 至 2025-12 | 真实横截面 |
 | `index_daily.parquet` | 6 只宽基 ETF | 择时检验的市场载体 |
+| `panel_r.csv.gz` | 287 只 · 9 列 · 6.8 MB | 供 R 读取（read.csv 直接支持 gz） |
 
 除常规 OHLCV 外，面板里还带 `forward_1` / `forward_5` / `forward_20`（前向收益）、`fwd_vol_20`（未来 20 日已实现波动率）、`limit_up` / `limit_down` / `suspended` / `tradable`（可交易性）、`industry`（申万一级）、`corp_action`（送转除权修补标记）。
 

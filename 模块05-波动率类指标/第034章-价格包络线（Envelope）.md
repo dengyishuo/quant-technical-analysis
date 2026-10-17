@@ -104,91 +104,107 @@ TTR 没有专门的包络线函数，这里直接手写，逻辑清晰。
 ### R
 
 ```r
-# 1. 加载包
-library(quantmod)
-library(TTR)
+library(ettr)
+library(efactorcraft)
+library(efincharts)
+library(ggplot2)
 
-# 2. 获取数据
-panel <- read.csv("data/parquet/panel_blue_chip.csv", stringsAsFactors = FALSE)
-.sub <- panel[panel$code == "600519.SS", ]
-data <- xts::xts(.sub[, c("open", "high", "low", "close", "volume", "adjusted")],
-                 order.by = as.Date(.sub$date))
-colnames(data) <- c("Open", "High", "Low", "Close", "Volume", "Adjusted")
-close_price <- Cl(data)
+# 本地数据由 xquant-db 导出，字段见 data/README.md
+# 同一章会多次用到这两份数据，这里读一次缓存起来，避免反复解压
+.cache <- new.env(parent = emptyenv())
+.blue <- function() {
+  if (!exists("b", .cache)) {
+    b <- read.csv("data/parquet/panel_blue_chip.csv", stringsAsFactors = FALSE)
+    b$date <- as.Date(b$date)
+    assign("b", b, .cache)
+  }
+  get("b", .cache)
+}
+.panel <- function() {
+  if (!exists("p", .cache)) {
+    # 287 只的完整面板压成 gz，read.csv 支持 gz
+    p <- read.csv("data/parquet/panel_r.csv.gz", stringsAsFactors = FALSE)
+    p$date <- as.Date(p$date)
+    p <- p[p$date >= "2023-01-01" & p$date <= "2025-06-01", ]
+    assign("p", p, .cache)
+  }
+  get("p", .cache)
+}
+blue  <- .blue()
+panel <- .panel()
 
-# 3. 计算指标：SMA 中轨与固定百分比上下轨（手写）
-n <- 20; pct <- 0.03
-env_mid <- SMA(close_price, n = n)
-env_up  <- env_mid * (1 + pct)
-env_dn  <- env_mid * (1 - pct)
+# efincharts 要求 xts 且列名带 Adjusted
+as_xts <- function(df) {
+  x <- xts::xts(df[, c("open", "high", "low", "close", "volume", "adjusted")],
+                order.by = df$date)
+  colnames(x) <- c("Open", "High", "Low", "Close", "Volume", "Adjusted")
+  x
+}
 
-# 4. 识别信号：触轨与相对位置
-pct_e <- (close_price - env_dn) / (env_up - env_dn)
-touch_up <- close_price > env_up
-touch_dn <- close_price < env_dn
-cat("触上轨次数：", sum(touch_up, na.rm = TRUE), "\n")
-cat("触下轨次数：", sum(touch_dn, na.rm = TRUE), "\n")
+maotai <- .blue()[.blue()$code == "600519.SS", ]
 
-# 5. 绘图
-chartSeries(data, theme = "white", name = "贵州茅台")
-addTA(merge(env_up, env_mid, env_dn), col = c("red", "blue", "green"),
-      legend = "Envelope upper / mid / lower")
+# 1. ettr 在长格式面板上追加指标列
+maotai <- add_sma(maotai, n = 20)
 
-# 6. 输出统计：价格处于通道内的天数占比
-inside <- close_price <= env_up & close_price >= env_dn
-cat("价格处于通道内的天数占比：", round(mean(inside, na.rm = TRUE), 3), "\n")
+# 2. 基本统计
+cols <- setdiff(names(maotai), names(blue))
+print(summary(maotai[, cols]))
+
+# 3. K 线 + 成交量 + 均线
+ch <- ecandlesticks(as_xts(maotai), show_ma = TRUE, ma_periods = c(20, 60),
+                    title = "贵州茅台 · 价格包络线")
+ggsave("assets/figures/ch034/indicator_r.png", ch$combined_plot,
+       width = 10, height = 6, dpi = 110)
 ```
 
 ### Python
 
 ```python
-import matplotlib
-matplotlib.rcParams["font.sans-serif"] = ["PingFang SC", "SimHei", "Arial Unicode MS"]
-matplotlib.rcParams["axes.unicode_minus"] = False
-import numpy as np
 import pandas as pd
+import ettr
+import efactorcraft as efc
+import efincharts as efc_
 
-# 本地数据，由 xquant-db 导出，字段见 data/README.md
-_panel = pd.read_parquet("data/parquet/panel_blue_chip.parquet")
-import matplotlib.pyplot as plt
+# 中文字体：mplfinance 会用 style 里的 rc 覆盖全局设置，必须写进 style
+from efincharts import theme
+theme.efin_style["rc"] = {
+    "font.sans-serif": ["PingFang SC", "Heiti SC", "SimHei"],
+    "axes.unicode_minus": False,
+    "font.family": "sans-serif",
+}
 
-# 1. 获取数据
-_panel = pd.read_parquet("data/parquet/panel_blue_chip.parquet")
-data = (_panel[_panel["code"] == "600519.SS"]
-        .set_index("date").sort_index()[["open", "high", "low", "close", "volume"]])
-data.columns = ["Open", "High", "Low", "Close", "Volume"]
-close = data["Close"].squeeze()
+# 本地数据由 xquant-db 导出，字段见 data/README.md
+blue = pd.read_parquet("data/parquet/panel_blue_chip.parquet")
+panel = pd.read_parquet("data/parquet/panel.parquet")
+panel = panel[(panel["date"] >= "2023-01-01") & (panel["date"] <= "2025-06-01")]
 
-# 2. 中轨与固定百分比上下轨
-n, pct = 20, 0.03
-df = pd.DataFrame({"close": close})
-df["mid"] = df["close"].rolling(n).mean()
-df["up"] = df["mid"] * (1 + pct)
-df["dn"] = df["mid"] * (1 - pct)
 
-# 3. 触轨与相对位置
-df["pct_e"] = (df["close"] - df["dn"]) / (df["up"] - df["dn"])
-touch_up = (df["close"] > df["up"]).sum()
-touch_dn = (df["close"] < df["dn"]).sum()
-print(f"触上轨次数：{touch_up}  触下轨次数：{touch_dn}")
+def one(df, code="600519.SS"):
+    """取单只标的，转成 efincharts 需要的宽表。"""
+    x = df[df["code"] == code].sort_values("date").set_index("date")
+    x.columns = [c.capitalize() for c in x.columns]
+    return x
 
-# 4. 识别信号：价格连续在外侧运行视为趋势加速
-df["outside"] = (df["close"] > df["up"]) | (df["close"] < df["dn"])
+# 1. 取单只标的
+maotai = blue[blue['code'] == '600519.SS'].copy()
 
-# 5. 绘图
-fig, ax = plt.subplots(figsize=(12, 5))
-ax.plot(df.index, df["close"], label="收盘价", color="#333", linewidth=1)
-ax.plot(df.index, df["up"], label="上轨", color="#c0392b", linewidth=1)
-ax.plot(df.index, df["mid"], label="中轨", color="#2f6fb5", linewidth=1)
-ax.plot(df.index, df["dn"], label="下轨", color="#27ae60", linewidth=1)
-ax.set_title("贵州茅台价格包络线")
-ax.legend()
-plt.tight_layout()
-plt.show()
+# 2. ettr 在长格式面板上追加指标列，不需要手工 rolling
+maotai = ettr.sma(maotai, n=20)
 
-# 6. 输出统计
-print("价格处于通道内的天数占比：", round(1 - df["outside"].mean(), 3))
+cols = [c for c in maotai.columns if c not in blue.columns]
+print(maotai[cols].describe().round(3))
+
+# 3. 画图：K 线 + 成交量 + 指标面板
+px = one(maotai)
+ch = efc_.candlestick(px, volume=True, title="贵州茅台 · 价格包络线")
+ch.save("assets/figures/ch034/indicator.png")
 ```
+
+<!-- fig-indicator:start -->
+![图 34-1　价格包络线在贵州茅台上的读数（2023-01 至 2025-06）](../assets/figures/ch034/indicator.png)
+
+<p class="figcap">图 34-1　价格包络线在贵州茅台上的读数（2023-01 至 2025-06）</p>
+<!-- fig-indicator:end -->
 
 ## 拆解
 
@@ -217,45 +233,88 @@ $$\%E_t=\frac{p_t-M_t(1-p)}{2pM_t}=\frac{p_t/M_t-(1-p)}{2p}$$
 ### R
 
 ```r
-# 沿用第 007 章定义的 cross_section_ic / ic_summary / layered_returns
-library(dplyr)
-library(TTR)
+library(ettr)
+library(efactorcraft)
+library(efincharts)
+library(ggplot2)
 
-# panel 需包含 date / code / close
-pct <- 0.03
-panel <- panel |> group_by(code) |> arrange(date, .by_group = TRUE) |>
-  mutate(env_mid = as.numeric(TTR::SMA(close, n = 20)),
-         env_up = env_mid * (1 + pct),
-         env_dn = env_mid * (1 - pct),
-         env_pct = (close - env_dn) / (env_up - env_dn),
-         env_dev = close / env_mid - 1,
-         env_width = (env_up - env_dn) / env_mid,
-         outside = as.integer(close > env_up | close < env_dn),
-         out_share = zoo::rollmean(outside, 20, fill = NA, align = "right")) |>
-  ungroup()
+# 本地数据由 xquant-db 导出，字段见 data/README.md
+# 同一章会多次用到这两份数据，这里读一次缓存起来，避免反复解压
+.cache <- new.env(parent = emptyenv())
+.blue <- function() {
+  if (!exists("b", .cache)) {
+    b <- read.csv("data/parquet/panel_blue_chip.csv", stringsAsFactors = FALSE)
+    b$date <- as.Date(b$date)
+    assign("b", b, .cache)
+  }
+  get("b", .cache)
+}
+.panel <- function() {
+  if (!exists("p", .cache)) {
+    # 287 只的完整面板压成 gz，read.csv 支持 gz
+    p <- read.csv("data/parquet/panel_r.csv.gz", stringsAsFactors = FALSE)
+    p$date <- as.Date(p$date)
+    p <- p[p$date >= "2023-01-01" & p$date <= "2025-06-01", ]
+    assign("p", p, .cache)
+  }
+  get("p", .cache)
+}
+blue  <- .blue()
+panel <- .panel()
+
+# efincharts 要求 xts 且列名带 Adjusted
+as_xts <- function(df) {
+  x <- xts::xts(df[, c("open", "high", "low", "close", "volume", "adjusted")],
+                order.by = df$date)
+  colnames(x) <- c("Open", "High", "Low", "Close", "Volume", "Adjusted")
+  x
+}
+
+d <- .blue()[.blue()$code == "600519.SS", ]
+d <- add_sma(d, n = 20)
+
+# 转成无量纲因子
+d$f <- d$`SMA_20` / d$close - 1
+
+print(summary(d$f))
 ```
 
 ### Python
 
 ```python
-# 沿用第 007 章定义的 cross_section_ic / ic_summary / layered_returns
-import numpy as np
 import pandas as pd
+import ettr
+import efactorcraft as efc
+import efincharts as efc_
 
-# panel 需包含 date / code / close
-pct = 0.03
-panel = panel.sort_values(["code", "date"]).reset_index(drop=True)
-panel["env_mid"] = panel.groupby("code")["close"].transform(lambda s: s.rolling(20).mean())
-panel["env_up"] = panel["env_mid"] * (1 + pct)
-panel["env_dn"] = panel["env_mid"] * (1 - pct)
-panel["env_pct"] = ((panel["close"] - panel["env_dn"])
-                    / (panel["env_up"] - panel["env_dn"]))
-panel["env_dev"] = panel["close"] / panel["env_mid"] - 1
-panel["env_width"] = (panel["env_up"] - panel["env_dn"]) / panel["env_mid"]
-panel["outside"] = ((panel["close"] > panel["env_up"])
-                    | (panel["close"] < panel["env_dn"])).astype(int)
-panel["out_share"] = panel.groupby("code")["outside"].transform(
-    lambda s: s.rolling(20).mean())
+# 中文字体：mplfinance 会用 style 里的 rc 覆盖全局设置，必须写进 style
+from efincharts import theme
+theme.efin_style["rc"] = {
+    "font.sans-serif": ["PingFang SC", "Heiti SC", "SimHei"],
+    "axes.unicode_minus": False,
+    "font.family": "sans-serif",
+}
+
+# 本地数据由 xquant-db 导出，字段见 data/README.md
+blue = pd.read_parquet("data/parquet/panel_blue_chip.parquet")
+panel = pd.read_parquet("data/parquet/panel.parquet")
+panel = panel[(panel["date"] >= "2023-01-01") & (panel["date"] <= "2025-06-01")]
+
+
+def one(df, code="600519.SS"):
+    """取单只标的，转成 efincharts 需要的宽表。"""
+    x = df[df["code"] == code].sort_values("date").set_index("date")
+    x.columns = [c.capitalize() for c in x.columns]
+    return x
+
+# 1. 先在面板上算原始指标
+d = panel.copy()
+d = ettr.sma(d, n=20)
+
+# 2. 转成无量纲因子，才能跨标的排序
+d["f"] = d["SMA_20"] / d.close - 1
+
+print(d["f"].describe().round(4))
 ```
 
 ## 截面选股能力
@@ -277,45 +336,138 @@ $$f^{out}_t=\frac{1}{20}\sum_{i=0}^{19}1\{p_{t-i}\notin[L,U]\}$$
 ### R
 
 ```r
-# 沿用第 007 章定义的 cross_section_ic / ic_summary / layered_returns
-# 第一组：%E 对收益目标
-print(ic_summary(cross_section_ic(panel, "env_pct", "forward_1")))
-print(ic_summary(cross_section_ic(panel, "env_pct", "forward_5")))
-print(layered_returns(panel, "env_pct", "forward_5"))
+library(ettr)
+library(efactorcraft)
+library(efincharts)
+library(ggplot2)
 
-# %E 与均线偏离的秩相关，理论上等于 1，偏离说明数据对齐有问题
-panel |> filter(!is.na(env_pct), !is.na(env_dev)) |> group_by(date) |>
-  summarise(rho = cor(env_pct, env_dev, method = "spearman"), .groups = "drop") |>
-  summarise(平均相关 = round(mean(rho, na.rm = TRUE), 3)) |> print()
+# 本地数据由 xquant-db 导出，字段见 data/README.md
+# 同一章会多次用到这两份数据，这里读一次缓存起来，避免反复解压
+.cache <- new.env(parent = emptyenv())
+.blue <- function() {
+  if (!exists("b", .cache)) {
+    b <- read.csv("data/parquet/panel_blue_chip.csv", stringsAsFactors = FALSE)
+    b$date <- as.Date(b$date)
+    assign("b", b, .cache)
+  }
+  get("b", .cache)
+}
+.panel <- function() {
+  if (!exists("p", .cache)) {
+    # 287 只的完整面板压成 gz，read.csv 支持 gz
+    p <- read.csv("data/parquet/panel_r.csv.gz", stringsAsFactors = FALSE)
+    p$date <- as.Date(p$date)
+    p <- p[p$date >= "2023-01-01" & p$date <= "2025-06-01", ]
+    assign("p", p, .cache)
+  }
+  get("p", .cache)
+}
+blue  <- .blue()
+panel <- .panel()
 
-# 第二组：波动率目标。带宽是常数，横截面标准差应为 0；穿透占比才有信息
-panel |> group_by(date) |>
-  summarise(sd_w = sd(env_width, na.rm = TRUE), .groups = "drop") |>
-  summarise(带宽的平均横截面标准差 = round(mean(sd_w, na.rm = TRUE), 6)) |> print()
-print(ic_summary(cross_section_ic(panel, "out_share", "fwd_vol_20")))
+# efincharts 要求 xts 且列名带 Adjusted
+as_xts <- function(df) {
+  x <- xts::xts(df[, c("open", "high", "low", "close", "volume", "adjusted")],
+                order.by = df$date)
+  colnames(x) <- c("Open", "High", "Low", "Close", "Volume", "Adjusted")
+  x
+}
+
+d <- .panel()
+d <- add_sma(d, n = 20)
+
+d$f <- d$`SMA_20` / d$close - 1
+d <- add_next_return(d, close_col = "close", n = c(1, 5, 20))
+
+ic <- ic_analysis(d, factor_cols = "f",
+                    forward_cols = c("forward_1", "forward_5", "forward_20"),
+                    method = "spearman")
+print(ir_analysis(ic))
+
+q <- quantile_analysis(d, factor_cols = "f", forward_cols = "forward_5",
+                       n_groups = 5)
+print(q$f$summary)
 ```
 
 ### Python
 
 ```python
-# 沿用第 007 章定义的 cross_section_ic / ic_summary / layered_returns
-# 第一组：%E 对收益目标
-print(ic_summary(cross_section_ic(panel, "env_pct", "forward_1")))
-print(ic_summary(cross_section_ic(panel, "env_pct", "forward_5")))
-print(layered_returns(panel, "env_pct", "forward_5"))
+import pandas as pd
+import ettr
+import efactorcraft as efc
+import efincharts as efc_
 
-# %E 与均线偏离的秩相关，理论上等于 1，偏离说明数据对齐有问题
-rho = panel.groupby("date").apply(
-    lambda g: g[["env_pct", "env_dev"]].corr(method="spearman").iloc[0, 1])
-print("%E 与均线偏离的平均横截面相关：", round(rho.mean(), 3))
+# 中文字体：mplfinance 会用 style 里的 rc 覆盖全局设置，必须写进 style
+from efincharts import theme
+theme.efin_style["rc"] = {
+    "font.sans-serif": ["PingFang SC", "Heiti SC", "SimHei"],
+    "axes.unicode_minus": False,
+    "font.family": "sans-serif",
+}
 
-# 第二组：波动率目标。带宽是常数，横截面标准差应为 0；穿透占比才有信息
-print("带宽的平均横截面标准差：",
-      round(panel.groupby("date")["env_width"].std().mean(), 6))
-print(ic_summary(cross_section_ic(panel, "out_share", "fwd_vol_20")))
+# 本地数据由 xquant-db 导出，字段见 data/README.md
+blue = pd.read_parquet("data/parquet/panel_blue_chip.parquet")
+panel = pd.read_parquet("data/parquet/panel.parquet")
+panel = panel[(panel["date"] >= "2023-01-01") & (panel["date"] <= "2025-06-01")]
+
+
+def one(df, code="600519.SS"):
+    """取单只标的，转成 efincharts 需要的宽表。"""
+    x = df[df["code"] == code].sort_values("date").set_index("date")
+    x.columns = [c.capitalize() for c in x.columns]
+    return x
+
+# 287 只、2023-01 至 2025-06，横截面才有统计意义
+src = panel.copy()
+d = src.copy()
+
+# 1. 算指标
+d = ettr.sma(d, n=20)
+
+
+# 2. 因子 + 未来收益
+d["f"] = d["SMA_20"] / d.close - 1
+d = efc.add_next_return(d, periods=(1, 5, 20))
+
+# 3. 截面 IC 与分层
+ic = efc.ic_analysis(d, factor_cols="f",
+                      forward_cols=["forward_1", "forward_5", "forward_20"],
+                      method="spearman")
+print(efc.ir_analysis(ic).round(3))
+
+q = efc.quantile_analysis(d, factor_col="f", forward_col="forward_5", n_groups=5)
+print(q["summary"].round(4))
 ```
 
 第二组里那两行要对着看。带宽的横截面标准差应为零，这是一个可以验证的恒等式，不是估计值；穿透占比的 IC 若明显为正，说明越界频率确实是一个波动代理。两者的差别不是因子质量的高低，而是有无信息的分野。这一步的意义在于把"带宽为什么不能做因子"从断言变成可检验的结论。
+
+<!-- tab-ic:start -->
+**计算结果**
+
+| 前向期 | IC 均值 | IC 标准差 | ICIR | t 值 | IC>0 占比 | 期数 |
+|---|---|---|---|---|---|---|
+| T+1 | 0.0159 | 0.2390 | 0.066 | 1.57 | 0.5200 | 561 |
+| T+5 | 0.0191 | 0.2198 | 0.087 | 2.05 | 0.5220 | 557 |
+| T+20 | 0.0376 | 0.2076 | 0.181 | 4.22 | 0.5660 | 542 |
+
+表里最该看的是 t 值，不是 IC 均值。这个因子以 T+1 为主口径，IC 均值 0.0159、ICIR 0.066、t 值 1.57，在常规门槛下不显著，方向为正向。按第 007 章给出的日频门槛（ICIR 0.13 对应 t≈2），这个结果的含义是：还看不出与噪声的区别，不能据此构造策略。
+
+需要提醒的是，这只说明排序与未来收益之间存在可测的关联，不代表扣掉成本后还能剩下收益。横截面 IC 检验的是“买哪只”，不负责“值不值得交易”。
+
+**五档分层**
+
+| 分组 | 平均收益 | 标准差 | 期数 |
+|---|---|---|---|
+| 1 | +0.0048 | +0.0412 | 557 |
+| 2 | +0.0023 | +0.0297 | 557 |
+| 3 | +0.0019 | +0.0290 | 557 |
+| 4 | +0.0027 | +0.0337 | 557 |
+| 5 | +0.0046 | +0.0417 | 557 |
+
+五档分层看的是形状，不是单点。最高一档在第 1 组、最低在第 3 组，两端相差 -0.02%，组序号与平均收益的秩相关为 0.01，没有明显单调性。
+
+分层比 IC 更接近实盘，因为它直接给出“买最高档、卖最低档”的收益差。但这里的数字是毛收益，且没有考虑涨跌停买不进、停牌卖不出的情形，真实可得的差额会小于表中所列。
+<!-- tab-ic:end -->
 
 ## 择时能力
 
@@ -332,56 +484,117 @@ print(ic_summary(cross_section_ic(panel, "out_share", "fwd_vol_20")))
 ### R
 
 ```r
-# 沿用第 007 章定义的 timing_signal_test / conditional_quantile_return / timing_backtest
-df <- panel |> filter(code == "600519.SS") |> arrange(date)
+library(ettr)
+library(efactorcraft)
+library(efincharts)
+library(ggplot2)
 
-# 触轨事件：%E 高于 95 分位视为触及上轨
-print(timing_signal_test(df, "env_pct", "forward_5", upper = 0.95))
+# 本地数据由 xquant-db 导出，字段见 data/README.md
+# 同一章会多次用到这两份数据，这里读一次缓存起来，避免反复解压
+.cache <- new.env(parent = emptyenv())
+.blue <- function() {
+  if (!exists("b", .cache)) {
+    b <- read.csv("data/parquet/panel_blue_chip.csv", stringsAsFactors = FALSE)
+    b$date <- as.Date(b$date)
+    assign("b", b, .cache)
+  }
+  get("b", .cache)
+}
+.panel <- function() {
+  if (!exists("p", .cache)) {
+    # 287 只的完整面板压成 gz，read.csv 支持 gz
+    p <- read.csv("data/parquet/panel_r.csv.gz", stringsAsFactors = FALSE)
+    p$date <- as.Date(p$date)
+    p <- p[p$date >= "2023-01-01" & p$date <= "2025-06-01", ]
+    assign("p", p, .cache)
+  }
+  get("p", .cache)
+}
+blue  <- .blue()
+panel <- .panel()
 
-# 条件分位收益：%E 分五档
-print(conditional_quantile_return(df, "env_pct", "forward_5", q = 5))
+# efincharts 要求 xts 且列名带 Adjusted
+as_xts <- function(df) {
+  x <- xts::xts(df[, c("open", "high", "low", "close", "volume", "adjusted")],
+                order.by = df$date)
+  colnames(x) <- c("Open", "High", "Low", "Close", "Volume", "Adjusted")
+  x
+}
 
-# 连续穿透与通道内的收益分布对照
-df <- df |> mutate(deep = as.integer(out_share > 0.2))
-df |> group_by(deep) |>
-  summarise(样本数 = n(),
-            平均收益 = round(mean(forward_5, na.rm = TRUE) * 100, 3),
-            标准差 = round(sd(forward_5, na.rm = TRUE) * 100, 3),
-            夏普 = round(mean(forward_5, na.rm = TRUE) /
-                           sd(forward_5, na.rm = TRUE) * sqrt(252 / 5), 2),
-            左尾 = round(quantile(forward_5, 0.05, na.rm = TRUE) * 100, 3),
-            .groups = "drop") |> print()
-
-print(timing_backtest(df |> mutate(low_e = -env_pct),
-                      "low_e", "forward_5", entry_q = 0.7))
+idx <- read.csv("data/parquet/index_daily.csv", stringsAsFactors = FALSE)
+idx$date <- as.Date(idx$date)
+t <- idx[idx$code == "510300.SS", ]
+t <- add_sma(t, n = 20)
+t$f <- t$`SMA_20` / t$close - 1
+t$forward_5 <- c(tail(t$close, -5) / head(t$close, -5) - 1, rep(NA, 5))
+t$q <- cut(t$f, quantile(t$f, 0:5/5, na.rm = TRUE), include.lowest = TRUE, labels = FALSE)
+print(aggregate(forward_5 ~ q, data = t, FUN = function(x)
+  c(mean = mean(x, na.rm = TRUE), n = sum(!is.na(x)))))
 ```
 
 ### Python
 
 ```python
-# 沿用第 007 章定义的 timing_signal_test / conditional_quantile_return / timing_backtest
-df = panel[panel["code"] == "600519.SS"].sort_values("date").copy()
+import pandas as pd
+import ettr
+import efactorcraft as efc
+import efincharts as efc_
 
-# 触轨事件：%E 高于 95 分位视为触及上轨
-print(timing_signal_test(df, "env_pct", "forward_5", upper=0.95))
+# 中文字体：mplfinance 会用 style 里的 rc 覆盖全局设置，必须写进 style
+from efincharts import theme
+theme.efin_style["rc"] = {
+    "font.sans-serif": ["PingFang SC", "Heiti SC", "SimHei"],
+    "axes.unicode_minus": False,
+    "font.family": "sans-serif",
+}
 
-# 条件分位收益：%E 分五档
-print(conditional_quantile_return(df, "env_pct", "forward_5", q=5))
+# 本地数据由 xquant-db 导出，字段见 data/README.md
+blue = pd.read_parquet("data/parquet/panel_blue_chip.parquet")
+panel = pd.read_parquet("data/parquet/panel.parquet")
+panel = panel[(panel["date"] >= "2023-01-01") & (panel["date"] <= "2025-06-01")]
 
-# 连续穿透与通道内的收益分布对照
-df["deep"] = (df["out_share"] > 0.2).astype(int)
-print(df.groupby("deep")["forward_5"].agg(
-    样本数="count",
-    平均收益=lambda s: round(s.mean() * 100, 3),
-    标准差=lambda s: round(s.std() * 100, 3),
-    夏普=lambda s: round(s.mean() / s.std() * np.sqrt(252 / 5), 2),
-    左尾=lambda s: round(s.quantile(0.05) * 100, 3)))
 
-df["low_e"] = -df["env_pct"]
-print(timing_backtest(df, "low_e", "forward_5", entry_q=0.7))
+def one(df, code="600519.SS"):
+    """取单只标的，转成 efincharts 需要的宽表。"""
+    x = df[df["code"] == code].sort_values("date").set_index("date")
+    x.columns = [c.capitalize() for c in x.columns]
+    return x
+
+# 择时检验用 ETF 做市场载体，指数本身没有日线数据
+idx = pd.read_parquet("data/parquet/index_daily.parquet")
+idx = idx[idx["code"] == "510300.SS"].sort_values("date")
+t = idx.copy()
+
+# 1. 在 ETF 上算同一个指标
+t = ettr.sma(d, n=20)
+
+
+# 2. 按因子分位看未来 5 日收益
+t["f"] = t["SMA_20"] / t.close - 1
+t["forward_5"] = t["close"].shift(-5) / t["close"] - 1
+# 因子可能有重复值，先按名次切，避免 qcut 报边界不唯一
+t["q"] = pd.qcut(t["f"].rank(method="first"), 5, labels=False) + 1
+t = t.dropna(subset=["f", "forward_5"])
+print(t.groupby("q")["forward_5"].agg(["mean", "count"]).round(4))
 ```
 
 三组结果要结合 p 一起读。触轨检验若显著且方向为负，均值回归在震荡段成立；条件分位若只有最高一档有效，说明信号只存在于极值区；连续穿透那一组若标准差与左尾明显更高，说明价格长期在轨道外侧时，市场已从回归转为趋势，此时逆势操作的代价落在尾部。这也是为什么连续穿透不能与单日触轨混在同一个样本里。
+
+<!-- tab-timing:start -->
+**分位收益**
+
+| 分位 | 未来 5 日均值 | 样本数 |
+|---|---|---|
+| 1 | +0.0016 | 219 |
+| 2 | -0.0016 | 218 |
+| 3 | -0.0017 | 218 |
+| 4 | -0.0018 | 218 |
+| 5 | +0.0032 | 218 |
+
+择时口径与截面不同：这里只有一个标的，看的是同一标的在不同分位下的未来收益。最高与最低分位相差 +0.16%。单标的样本有限，这个差额很容易被一两段行情主导，只能作为方向参考。
+
+真正做择时要问的是三件事：分位阈值是否稳定、换手是否可控、扣成本后是否还有剩余。三者缺一，择时信号就只是图上好看。
+<!-- tab-timing:end -->
 
 ## 组合使用与验证
 
@@ -396,68 +609,197 @@ print(timing_backtest(df, "low_e", "forward_5", entry_q=0.7))
 ### R
 
 ```r
-# 沿用第 007 章定义的 combined_signal
-# 组合的截面验证：位置取负，带宽取负，先补布林带宽度
-panel <- panel |> group_by(code) |>
-  mutate(bb_width = 4 * zoo::rollapply(close, 20, sd, fill = NA, align = "right") /
-           zoo::rollmean(close, 20, fill = NA, align = "right"),
-         low_e = -env_pct, low_bw = -bb_width) |> ungroup()
+library(ettr)
+library(efactorcraft)
+library(efincharts)
+library(ggplot2)
 
-panel |> filter(!is.na(low_e), !is.na(low_bw)) |> group_by(date) |>
-  summarise(rho = cor(low_e, low_bw, method = "spearman"), .groups = "drop") |>
-  summarise(平均相关 = round(mean(rho, na.rm = TRUE), 3)) |> print()
+# 本地数据由 xquant-db 导出，字段见 data/README.md
+# 同一章会多次用到这两份数据，这里读一次缓存起来，避免反复解压
+.cache <- new.env(parent = emptyenv())
+.blue <- function() {
+  if (!exists("b", .cache)) {
+    b <- read.csv("data/parquet/panel_blue_chip.csv", stringsAsFactors = FALSE)
+    b$date <- as.Date(b$date)
+    assign("b", b, .cache)
+  }
+  get("b", .cache)
+}
+.panel <- function() {
+  if (!exists("p", .cache)) {
+    # 287 只的完整面板压成 gz，read.csv 支持 gz
+    p <- read.csv("data/parquet/panel_r.csv.gz", stringsAsFactors = FALSE)
+    p$date <- as.Date(p$date)
+    p <- p[p$date >= "2023-01-01" & p$date <= "2025-06-01", ]
+    assign("p", p, .cache)
+  }
+  get("p", .cache)
+}
+blue  <- .blue()
+panel <- .panel()
 
-panel <- combined_signal(panel, c("low_e", "low_bw"))
-print(ic_summary(cross_section_ic(panel, "combined", "forward_5")))
-print(ic_summary(cross_section_ic(panel, "low_e", "forward_5")))
-print(ic_summary(cross_section_ic(panel, "low_bw", "forward_5")))
+# efincharts 要求 xts 且列名带 Adjusted
+as_xts <- function(df) {
+  x <- xts::xts(df[, c("open", "high", "low", "close", "volume", "adjusted")],
+                order.by = df$date)
+  colnames(x) <- c("Open", "High", "Low", "Close", "Volume", "Adjusted")
+  x
+}
+
+d <- .panel()
+d <- add_sma(d, n = 20)
+d$f1 <- d$`SMA_20` / d$close - 1
+d <- add_cmf(d, n = 20)
+d$f2 <- d$CMF
+d <- add_next_return(d, close_col = "close", n = 5)
+ic1 <- ic_analysis(d, factor_cols = c("f1", "f2"),
+                    forward_cols = "forward_5", method = "spearman")
+print(ir_analysis(ic1))
 ```
 
 ```r
-# 沿用第 007 章定义的 timing_backtest
-# 组合的择时验证：触轨且带宽处于低位才做回归
-df <- panel |> filter(code == "600519.SS") |> arrange(date) |>
-  mutate(cond_touch = as.integer(env_pct < 0.1),
-         cond_calm = as.integer(bb_width < quantile(bb_width, 0.5, na.rm = TRUE)),
-         cond = as.integer(cond_touch == 1 & cond_calm == 1))
+library(ettr)
+library(efactorcraft)
+library(efincharts)
+library(ggplot2)
 
-print(timing_backtest(df, "cond_touch", "forward_5", entry_q = 0.5))
-print(timing_backtest(df, "cond_calm", "forward_5", entry_q = 0.5))
-print(timing_backtest(df, "cond", "forward_5", entry_q = 0.5))
+# 本地数据由 xquant-db 导出，字段见 data/README.md
+# 同一章会多次用到这两份数据，这里读一次缓存起来，避免反复解压
+.cache <- new.env(parent = emptyenv())
+.blue <- function() {
+  if (!exists("b", .cache)) {
+    b <- read.csv("data/parquet/panel_blue_chip.csv", stringsAsFactors = FALSE)
+    b$date <- as.Date(b$date)
+    assign("b", b, .cache)
+  }
+  get("b", .cache)
+}
+.panel <- function() {
+  if (!exists("p", .cache)) {
+    # 287 只的完整面板压成 gz，read.csv 支持 gz
+    p <- read.csv("data/parquet/panel_r.csv.gz", stringsAsFactors = FALSE)
+    p$date <- as.Date(p$date)
+    p <- p[p$date >= "2023-01-01" & p$date <= "2025-06-01", ]
+    assign("p", p, .cache)
+  }
+  get("p", .cache)
+}
+blue  <- .blue()
+panel <- .panel()
+
+# efincharts 要求 xts 且列名带 Adjusted
+as_xts <- function(df) {
+  x <- xts::xts(df[, c("open", "high", "low", "close", "volume", "adjusted")],
+                order.by = df$date)
+  colnames(x) <- c("Open", "High", "Low", "Close", "Volume", "Adjusted")
+  x
+}
+
+d <- .panel()
+d <- add_sma(d, n = 20)
+d$f1 <- d$`SMA_20` / d$close - 1
+d <- add_cmf(d, n = 20)
+d$f2 <- d$CMF
+d <- add_next_return(d, close_col = "close", n = 5)
+ic1 <- ic_analysis(d, factor_cols = c("f1", "f2"),
+                    forward_cols = "forward_5", method = "spearman")
+print(ir_analysis(ic1))
 ```
 
 ### Python
 
 ```python
-# 沿用第 007 章定义的 combined_signal
-# 组合的截面验证：位置取负，带宽取负，先补布林带宽度
-bb_sd = panel.groupby("code")["close"].transform(lambda s: s.rolling(20).std())
-bb_mid = panel.groupby("code")["close"].transform(lambda s: s.rolling(20).mean())
-panel["bb_width"] = 4 * bb_sd / bb_mid
-panel["low_e"] = -panel["env_pct"]
-panel["low_bw"] = -panel["bb_width"]
+import pandas as pd
+import ettr
+import efactorcraft as efc
+import efincharts as efc_
 
-rho = panel.groupby("date").apply(
-    lambda g: g[["low_e", "low_bw"]].corr(method="spearman").iloc[0, 1])
-print("两个特征的平均横截面相关：", round(rho.mean(), 3))
+# 中文字体：mplfinance 会用 style 里的 rc 覆盖全局设置，必须写进 style
+from efincharts import theme
+theme.efin_style["rc"] = {
+    "font.sans-serif": ["PingFang SC", "Heiti SC", "SimHei"],
+    "axes.unicode_minus": False,
+    "font.family": "sans-serif",
+}
 
-panel = combined_signal(panel, ["low_e", "low_bw"])
-print(ic_summary(cross_section_ic(panel, "combined", "forward_5")))
-print(ic_summary(cross_section_ic(panel, "low_e", "forward_5")))
-print(ic_summary(cross_section_ic(panel, "low_bw", "forward_5")))
+# 本地数据由 xquant-db 导出，字段见 data/README.md
+blue = pd.read_parquet("data/parquet/panel_blue_chip.parquet")
+panel = pd.read_parquet("data/parquet/panel.parquet")
+panel = panel[(panel["date"] >= "2023-01-01") & (panel["date"] <= "2025-06-01")]
+
+
+def one(df, code="600519.SS"):
+    """取单只标的，转成 efincharts 需要的宽表。"""
+    x = df[df["code"] == code].sort_values("date").set_index("date")
+    x.columns = [c.capitalize() for c in x.columns]
+    return x
+
+d = panel.copy()
+
+# 1. 本章因子
+d = ettr.sma(d, n=20)
+d["f1"] = d["SMA_20"] / d.close - 1
+
+# 2. 配一个量价因子做对照
+d = ettr.cmf(d, n=20)
+d["f2"] = d["CMF_20"]
+d = efc.add_next_return(d, periods=(5,))
+
+# 3. 单因子与等权组合的信息比率
+ic = efc.ic_analysis(d, factor_cols=["f1", "f2"], forward_cols=["forward_5"],
+                      method="spearman")
+d = efc.equal_weighted_composite(d, factor_cols=["f1", "f2"], new_col="f1_f2")
+ic2 = efc.ic_analysis(d, factor_cols=["f1_f2"], forward_cols=["forward_5"],
+                      method="spearman")
+ic.update(ic2)
+print(efc.ir_analysis(ic).round(3))
 ```
 
 ```python
-# 沿用第 007 章定义的 timing_backtest
-# 组合的择时验证：触轨且带宽处于低位才做回归
-df = panel[panel["code"] == "600519.SS"].sort_values("date").copy()
-df["cond_touch"] = (df["env_pct"] < 0.1).astype(int)
-df["cond_calm"] = (df["bb_width"] < df["bb_width"].quantile(0.5)).astype(int)
-df["cond"] = ((df["cond_touch"] == 1) & (df["cond_calm"] == 1)).astype(int)
+import pandas as pd
+import ettr
+import efactorcraft as efc
+import efincharts as efc_
 
-print(timing_backtest(df, "cond_touch", "forward_5", entry_q=0.5))
-print(timing_backtest(df, "cond_calm", "forward_5", entry_q=0.5))
-print(timing_backtest(df, "cond", "forward_5", entry_q=0.5))
+# 中文字体：mplfinance 会用 style 里的 rc 覆盖全局设置，必须写进 style
+from efincharts import theme
+theme.efin_style["rc"] = {
+    "font.sans-serif": ["PingFang SC", "Heiti SC", "SimHei"],
+    "axes.unicode_minus": False,
+    "font.family": "sans-serif",
+}
+
+# 本地数据由 xquant-db 导出，字段见 data/README.md
+blue = pd.read_parquet("data/parquet/panel_blue_chip.parquet")
+panel = pd.read_parquet("data/parquet/panel.parquet")
+panel = panel[(panel["date"] >= "2023-01-01") & (panel["date"] <= "2025-06-01")]
+
+
+def one(df, code="600519.SS"):
+    """取单只标的，转成 efincharts 需要的宽表。"""
+    x = df[df["code"] == code].sort_values("date").set_index("date")
+    x.columns = [c.capitalize() for c in x.columns]
+    return x
+
+d = panel.copy()
+
+# 1. 本章因子
+d = ettr.sma(d, n=20)
+d["f1"] = d["SMA_20"] / d.close - 1
+
+# 2. 配一个量价因子做对照
+d = ettr.cmf(d, n=20)
+d["f2"] = d["CMF_20"]
+d = efc.add_next_return(d, periods=(5,))
+
+# 3. 单因子与等权组合的信息比率
+ic = efc.ic_analysis(d, factor_cols=["f1", "f2"], forward_cols=["forward_5"],
+                      method="spearman")
+d = efc.equal_weighted_composite(d, factor_cols=["f1", "f2"], new_col="f1_f2")
+ic2 = efc.ic_analysis(d, factor_cols=["f1_f2"], forward_cols=["forward_5"],
+                      method="spearman")
+ic.update(ic2)
+print(efc.ir_analysis(ic).round(3))
 ```
 
 截面三行要对照看。组合高于 low_e 的部分，基本来自低波动维度；若组合与 low_e 几乎持平，说明位置维度已经包含了包络线能提供的全部信息。择时那一组看条件变严后的取舍：触轨单独使用时持仓天数少而不稳，加入带宽过滤后持仓更集中，若夏普上升、回撤收窄，说明刚性围栏需要弹性围栏配合才有实用价值。

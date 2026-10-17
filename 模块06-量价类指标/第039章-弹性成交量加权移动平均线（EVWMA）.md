@@ -110,115 +110,107 @@ EVWMA 没有针对它本身的独立同行评议检验。它属于均线族的�
 ### R
 
 ```r
-# 1. 加载包
-library(quantmod)
-library(TTR)
+library(ettr)
+library(efactorcraft)
+library(efincharts)
+library(ggplot2)
 
-# 2. 获取数据
-panel <- read.csv("data/parquet/panel_blue_chip.csv", stringsAsFactors = FALSE)
-.sub <- panel[panel$code == "600519.SS", ]
-data <- xts::xts(.sub[, c("open", "high", "low", "close", "volume", "adjusted")],
-                 order.by = as.Date(.sub$date))
-colnames(data) <- c("Open", "High", "Low", "Close", "Volume", "Adjusted")
-close_price <- Cl(data)
-volume <- Vo(data)
-
-# 3. 计算指标：手写 EVWMA 递推（n 为成交量窗口天数）
-my_evwma <- function(price, volume, n = 20) {
-  p <- as.numeric(price); v <- as.numeric(volume)
-  N <- length(p)
-  out <- rep(NA_real_, N)
-  if (N < n) return(xts::xts(out, order.by = index(price)))
-  # 初值：前 n 日的成交量加权平均价
-  w <- sum(v[1:n])
-  out[n] <- sum(p[1:n] * v[1:n]) / w
-  # 递推：当日权重为 v[t] / W[t]
-  for (t in (n + 1):N) {
-    w <- w - v[t - n] + v[t]
-    out[t] <- (v[t] * p[t] + out[t - 1] * (w - v[t])) / w
+# 本地数据由 xquant-db 导出，字段见 data/README.md
+# 同一章会多次用到这两份数据，这里读一次缓存起来，避免反复解压
+.cache <- new.env(parent = emptyenv())
+.blue <- function() {
+  if (!exists("b", .cache)) {
+    b <- read.csv("data/parquet/panel_blue_chip.csv", stringsAsFactors = FALSE)
+    b$date <- as.Date(b$date)
+    assign("b", b, .cache)
   }
-  xts::xts(out, order.by = index(price))
+  get("b", .cache)
+}
+.panel <- function() {
+  if (!exists("p", .cache)) {
+    # 287 只的完整面板压成 gz，read.csv 支持 gz
+    p <- read.csv("data/parquet/panel_r.csv.gz", stringsAsFactors = FALSE)
+    p$date <- as.Date(p$date)
+    p <- p[p$date >= "2023-01-01" & p$date <= "2025-06-01", ]
+    assign("p", p, .cache)
+  }
+  get("p", .cache)
+}
+blue  <- .blue()
+panel <- .panel()
+
+# efincharts 要求 xts 且列名带 Adjusted
+as_xts <- function(df) {
+  x <- xts::xts(df[, c("open", "high", "low", "close", "volume", "adjusted")],
+                order.by = df$date)
+  colnames(x) <- c("Open", "High", "Low", "Close", "Volume", "Adjusted")
+  x
 }
 
-evwma20 <- my_evwma(close_price, volume, n = 20)
-ema20   <- EMA(close_price, n = 20)
+maotai <- .blue()[.blue()$code == "600519.SS", ]
 
-# 4. 识别信号：EVWMA 上穿 EMA 视为量能推动转强
-cross_up   <- crossover(evwma20, ema20)
-cross_down <- crossover(ema20, evwma20)
-cat("EVWMA 上穿 EMA 次数：", sum(cross_up, na.rm = TRUE), "\n")
-cat("EVWMA 下穿 EMA 次数：", sum(cross_down, na.rm = TRUE), "\n")
+# 1. ettr 在长格式面板上追加指标列
+maotai <- add_evwma(maotai, n = 10)
 
-# 5. 绘图
-chartSeries(data, theme = "white", name = "贵州茅台",
-  TA = "addTA(EVWMA(Cl(.), Vo(.), n = 20), col = 'blue');
-        addTA(EMA(Cl(.), n = 20), col = 'red')")
+# 2. 基本统计
+cols <- setdiff(names(maotai), names(blue))
+print(summary(maotai[, cols]))
 
-# 6. 输出统计：价格位于 EVWMA 上方的比例
-above <- sum(close_price > evwma20, na.rm = TRUE) / sum(!is.na(evwma20))
-cat("价格位于 EVWMA20 上方的比例：", round(above, 3), "\n")
+# 3. K 线 + 成交量 + 均线
+ch <- ecandlesticks(as_xts(maotai), show_ma = TRUE, ma_periods = c(20, 60),
+                    title = "贵州茅台 · 弹性成交量加权移动平均线")
+ggsave("assets/figures/ch039/indicator_r.png", ch$combined_plot,
+       width = 10, height = 6, dpi = 110)
 ```
 
 ### Python
 
 ```python
-import numpy as np
 import pandas as pd
+import ettr
+import efactorcraft as efc
+import efincharts as efc_
 
-# 本地数据，由 xquant-db 导出，字段见 data/README.md
-_panel = pd.read_parquet("data/parquet/panel_blue_chip.parquet")
-import matplotlib
-matplotlib.rcParams["font.sans-serif"] = ["PingFang SC", "SimHei", "Arial Unicode MS"]
-matplotlib.rcParams["axes.unicode_minus"] = False
-import matplotlib.pyplot as plt
+# 中文字体：mplfinance 会用 style 里的 rc 覆盖全局设置，必须写进 style
+from efincharts import theme
+theme.efin_style["rc"] = {
+    "font.sans-serif": ["PingFang SC", "Heiti SC", "SimHei"],
+    "axes.unicode_minus": False,
+    "font.family": "sans-serif",
+}
 
-# 1. 获取数据
-_panel = pd.read_parquet("data/parquet/panel_blue_chip.parquet")
-data = (_panel[_panel["code"] == "600519.SS"]
-        .set_index("date").sort_index()[["open", "high", "low", "close", "volume"]])
-data.columns = ["Open", "High", "Low", "Close", "Volume"]
-close = data["Close"].squeeze()
-volume = data["Volume"].squeeze()
+# 本地数据由 xquant-db 导出，字段见 data/README.md
+blue = pd.read_parquet("data/parquet/panel_blue_chip.parquet")
+panel = pd.read_parquet("data/parquet/panel.parquet")
+panel = panel[(panel["date"] >= "2023-01-01") & (panel["date"] <= "2025-06-01")]
 
-# 2. 手写 EVWMA 递推
-def evwma(price, volume, n=20):
-    p = price.to_numpy(dtype=float)
-    v = volume.to_numpy(dtype=float)
-    N = len(p)
-    out = np.full(N, np.nan)
-    if N < n:
-        return pd.Series(out, index=price.index)
-    w = v[:n].sum()
-    out[n - 1] = (p[:n] * v[:n]).sum() / w
-    for t in range(n, N):
-        w = w - v[t - n] + v[t]
-        out[t] = (v[t] * p[t] + out[t - 1] * (w - v[t])) / w
-    return pd.Series(out, index=price.index)
 
-# 3. 计算 EVWMA 与 EMA
-df = pd.DataFrame({"close": close})
-df["evwma20"] = evwma(close, volume, n=20)
-df["ema20"] = close.ewm(span=20, adjust=False).mean()
+def one(df, code="600519.SS"):
+    """取单只标的，转成 efincharts 需要的宽表。"""
+    x = df[df["code"] == code].sort_values("date").set_index("date")
+    x.columns = [c.capitalize() for c in x.columns]
+    return x
 
-# 4. 识别信号：EVWMA 上穿 EMA
-df["above"] = (df["evwma20"] > df["ema20"]).astype(int)
-df["cross_up"] = (df["above"] == 1) & (df["above"].shift(1) == 0)
-print(f"EVWMA 上穿 EMA 次数：{df['cross_up'].sum()}")
+# 1. 取单只标的
+maotai = blue[blue['code'] == '600519.SS'].copy()
 
-# 5. 绘图
-fig, ax = plt.subplots(figsize=(12, 5))
-ax.plot(df.index, df["close"], label="收盘价", color="#333", linewidth=1)
-ax.plot(df.index, df["evwma20"], label="EVWMA20", color="#2f6fb5")
-ax.plot(df.index, df["ema20"], label="EMA20", color="#c0392b")
-ax.set_title("贵州茅台 EVWMA 与 EMA 对比")
-ax.legend()
-plt.tight_layout()
-plt.show()
+# 2. ettr 在长格式面板上追加指标列，不需要手工 rolling
+maotai = ettr.evwma(maotai, n=10)
 
-# 6. 输出统计
-print("价格位于 EVWMA20 上方的比例：",
-      round((df["close"] > df["evwma20"]).sum() / df["evwma20"].notna().sum(), 3))
+cols = [c for c in maotai.columns if c not in blue.columns]
+print(maotai[cols].describe().round(3))
+
+# 3. 画图：K 线 + 成交量 + 指标面板
+px = one(maotai)
+ch = efc_.candlestick(px, volume=True, title="贵州茅台 · 弹性成交量加权移动平均线")
+ch.save("assets/figures/ch039/indicator.png")
 ```
+
+<!-- fig-indicator:start -->
+![图 39-1　弹性成交量加权移动平均线在贵州茅台上的读数（2023-01 至 2025-06）](../assets/figures/ch039/indicator.png)
+
+<p class="figcap">图 39-1　弹性成交量加权移动平均线在贵州茅台上的读数（2023-01 至 2025-06）</p>
+<!-- fig-indicator:end -->
 
 ## 拆解
 
@@ -240,79 +232,88 @@ EVWMA 与价格同量纲，直接排序排的是股价。偏离度虽无量纲�
 ### R
 
 ```r
-# 沿用第 007 章定义的 cross_section_ic / ic_summary / layered_returns
-library(dplyr)
+library(ettr)
+library(efactorcraft)
+library(efincharts)
+library(ggplot2)
 
-# EVWMA 递推：当日权重为 v_t / W_t，W_t 为 n 日成交量之和
-evwma_calc <- function(p, v, n = 20) {
-  p <- as.numeric(p); v <- as.numeric(v)
-  N <- length(p); out <- rep(NA_real_, N)
-  if (N < n) return(out)
-  w <- sum(v[1:n])
-  out[n] <- sum(p[1:n] * v[1:n]) / w
-  for (t in (n + 1):N) {
-    w <- w - v[t - n] + v[t]
-    out[t] <- (v[t] * p[t] + out[t - 1] * (w - v[t])) / w
+# 本地数据由 xquant-db 导出，字段见 data/README.md
+# 同一章会多次用到这两份数据，这里读一次缓存起来，避免反复解压
+.cache <- new.env(parent = emptyenv())
+.blue <- function() {
+  if (!exists("b", .cache)) {
+    b <- read.csv("data/parquet/panel_blue_chip.csv", stringsAsFactors = FALSE)
+    b$date <- as.Date(b$date)
+    assign("b", b, .cache)
   }
-  out
+  get("b", .cache)
+}
+.panel <- function() {
+  if (!exists("p", .cache)) {
+    # 287 只的完整面板压成 gz，read.csv 支持 gz
+    p <- read.csv("data/parquet/panel_r.csv.gz", stringsAsFactors = FALSE)
+    p$date <- as.Date(p$date)
+    p <- p[p$date >= "2023-01-01" & p$date <= "2025-06-01", ]
+    assign("p", p, .cache)
+  }
+  get("p", .cache)
+}
+blue  <- .blue()
+panel <- .panel()
+
+# efincharts 要求 xts 且列名带 Adjusted
+as_xts <- function(df) {
+  x <- xts::xts(df[, c("open", "high", "low", "close", "volume", "adjusted")],
+                order.by = df$date)
+  colnames(x) <- c("Open", "High", "Low", "Close", "Volume", "Adjusted")
+  x
 }
 
-# panel 已含 date / code / close / volume / forward_1 / forward_5
-panel <- panel |>
-  group_by(code) |>
-  arrange(date, .by_group = TRUE) |>
-  mutate(
-    evwma20 = evwma_calc(close, volume, 20),
-    sma20 = zoo::rollmean(close, 20, fill = NA, align = "right"),
-    evwma_dev = close / evwma20 - 1,
-    # 成交集中度：量价加权均线相对等权均线的位移
-    conc = evwma20 / sma20 - 1,
-    conc_abs = abs(conc),
-    # 当日成交占 20 日成交量之和的比例
-    w_now = volume / zoo::rollsum(volume, 20, fill = NA, align = "right"),
-    evwma_slope = evwma20 / dplyr::lag(evwma20, 10) - 1
-  ) |>
-  ungroup()
+d <- .blue()[.blue()$code == "600519.SS", ]
+d <- add_evwma(d, n = 10)
+
+# 转成无量纲因子
+d$f <- d$`EVWMA` / d$close - 1
+
+print(summary(d$f))
 ```
 
 ### Python
 
 ```python
-# 沿用第 007 章定义的 cross_section_ic / ic_summary / layered_returns
-import numpy as np
 import pandas as pd
+import ettr
+import efactorcraft as efc
+import efincharts as efc_
 
-# EVWMA 递推：当日权重为 v_t / W_t，W_t 为 n 日成交量之和
-def evwma(price, volume, n=20):
-    p = price.to_numpy(dtype=float)
-    v = volume.to_numpy(dtype=float)
-    out = np.full(len(p), np.nan)
-    if len(p) < n:
-        return pd.Series(out, index=price.index)
-    w = v[:n].sum()
-    out[n - 1] = (p[:n] * v[:n]).sum() / w
-    for t in range(n, len(p)):
-        w = w - v[t - n] + v[t]
-        out[t] = (v[t] * p[t] + out[t - 1] * (w - v[t])) / w
-    return pd.Series(out, index=price.index)
+# 中文字体：mplfinance 会用 style 里的 rc 覆盖全局设置，必须写进 style
+from efincharts import theme
+theme.efin_style["rc"] = {
+    "font.sans-serif": ["PingFang SC", "Heiti SC", "SimHei"],
+    "axes.unicode_minus": False,
+    "font.family": "sans-serif",
+}
 
-# panel 已含 date / code / close / volume / forward_1 / forward_5
-panel = panel.sort_values(["code", "date"]).reset_index(drop=True)
-grp = panel.groupby("code")
-panel["evwma20"] = np.nan
-for code, g in panel.groupby("code"):
-    panel.loc[g.index, "evwma20"] = evwma(g["close"], g["volume"], n=20)
+# 本地数据由 xquant-db 导出，字段见 data/README.md
+blue = pd.read_parquet("data/parquet/panel_blue_chip.parquet")
+panel = pd.read_parquet("data/parquet/panel.parquet")
+panel = panel[(panel["date"] >= "2023-01-01") & (panel["date"] <= "2025-06-01")]
 
-panel["sma20"] = grp["close"].transform(lambda s: s.rolling(20).mean())
-panel["evwma_dev"] = panel["close"] / panel["evwma20"] - 1
 
-# 成交集中度：量价加权均线相对等权均线的位移
-panel["conc"] = panel["evwma20"] / panel["sma20"] - 1
-panel["conc_abs"] = panel["conc"].abs()
+def one(df, code="600519.SS"):
+    """取单只标的，转成 efincharts 需要的宽表。"""
+    x = df[df["code"] == code].sort_values("date").set_index("date")
+    x.columns = [c.capitalize() for c in x.columns]
+    return x
 
-# 当日成交占 20 日成交量之和的比例
-panel["w_now"] = panel["volume"] / grp["volume"].transform(lambda s: s.rolling(20).sum())
-panel["evwma_slope"] = panel["evwma20"] / grp["evwma20"].shift(10) - 1
+# 1. 先在面板上算原始指标
+d = panel.copy()
+d = ettr.evwma(d, n=10)
+
+# 2. 转成无量纲因子，才能跨标的排序
+d["f"] = d["EVWMA_10"] / d.close - 1
+
+print(d["f"].describe().round(4))
 ```
 
 四个特征的信息量递减：偏离度与斜率是均线的常规派生量，集中度与当日权重才带着成交量的痕迹。
@@ -344,64 +345,138 @@ $$f^{dev}_t=\frac{p_t-EVWMA_t^{(n)}}{EVWMA_t^{(n)}}$$
 ### R
 
 ```r
-# 沿用第 007 章定义的 cross_section_ic / ic_summary / layered_returns
-# 集中度与偏离度并列检验
-for (f in c("conc", "evwma_dev")) {
-  cat("\n---", f, "vs forward_5 ---\n")
-  print(ic_summary(cross_section_ic(panel, f, "forward_5")))
+library(ettr)
+library(efactorcraft)
+library(efincharts)
+library(ggplot2)
+
+# 本地数据由 xquant-db 导出，字段见 data/README.md
+# 同一章会多次用到这两份数据，这里读一次缓存起来，避免反复解压
+.cache <- new.env(parent = emptyenv())
+.blue <- function() {
+  if (!exists("b", .cache)) {
+    b <- read.csv("data/parquet/panel_blue_chip.csv", stringsAsFactors = FALSE)
+    b$date <- as.Date(b$date)
+    assign("b", b, .cache)
+  }
+  get("b", .cache)
+}
+.panel <- function() {
+  if (!exists("p", .cache)) {
+    # 287 只的完整面板压成 gz，read.csv 支持 gz
+    p <- read.csv("data/parquet/panel_r.csv.gz", stringsAsFactors = FALSE)
+    p$date <- as.Date(p$date)
+    p <- p[p$date >= "2023-01-01" & p$date <= "2025-06-01", ]
+    assign("p", p, .cache)
+  }
+  get("p", .cache)
+}
+blue  <- .blue()
+panel <- .panel()
+
+# efincharts 要求 xts 且列名带 Adjusted
+as_xts <- function(df) {
+  x <- xts::xts(df[, c("open", "high", "low", "close", "volume", "adjusted")],
+                order.by = df$date)
+  colnames(x) <- c("Open", "High", "Low", "Close", "Volume", "Adjusted")
+  x
 }
 
-print(layered_returns(panel, "conc", "forward_5"))
+d <- .panel()
+d <- add_evwma(d, n = 10)
 
-# 集中度的绝对值版本：只保留集中程度，剥掉方向
-cat("\n--- 集中度绝对值 ---\n")
-print(ic_summary(cross_section_ic(panel, "conc_abs", "forward_5")))
+d$f <- d$`EVWMA` / d$close - 1
+d <- add_next_return(d, close_col = "close", n = c(1, 5, 20))
 
-# 对偏离度取残差，看集中度是否还有独立信息
-panel <- panel |>
-  group_by(date) |>
-  mutate(conc_resid = {
-    ok <- !is.na(conc) & !is.na(evwma_dev)
-    r <- rep(NA_real_, dplyr::n())
-    if (sum(ok) >= 10) r[ok] <- residuals(lm(conc[ok] ~ evwma_dev[ok]))
-    r
-  }) |>
-  ungroup()
+ic <- ic_analysis(d, factor_cols = "f",
+                    forward_cols = c("forward_1", "forward_5", "forward_20"),
+                    method = "spearman")
+print(ir_analysis(ic))
 
-cat("\n--- 剔除偏离度后的残差 ---\n")
-print(ic_summary(cross_section_ic(panel, "conc_resid", "forward_5")))
+q <- quantile_analysis(d, factor_cols = "f", forward_cols = "forward_5",
+                       n_groups = 5)
+print(q$f$summary)
 ```
 
 ### Python
 
 ```python
-# 沿用第 007 章定义的 cross_section_ic / ic_summary / layered_returns
-# 集中度与偏离度并列检验
-for f in ["conc", "evwma_dev"]:
-    print(f"\n--- {f} vs forward_5 ---")
-    print(ic_summary(cross_section_ic(panel, f, "forward_5")))
+import pandas as pd
+import ettr
+import efactorcraft as efc
+import efincharts as efc_
 
-print(layered_returns(panel, "conc", "forward_5"))
+# 中文字体：mplfinance 会用 style 里的 rc 覆盖全局设置，必须写进 style
+from efincharts import theme
+theme.efin_style["rc"] = {
+    "font.sans-serif": ["PingFang SC", "Heiti SC", "SimHei"],
+    "axes.unicode_minus": False,
+    "font.family": "sans-serif",
+}
 
-# 集中度的绝对值版本：只保留集中程度，剥掉方向
-print("\n--- 集中度绝对值 ---")
-print(ic_summary(cross_section_ic(panel, "conc_abs", "forward_5")))
+# 本地数据由 xquant-db 导出，字段见 data/README.md
+blue = pd.read_parquet("data/parquet/panel_blue_chip.parquet")
+panel = pd.read_parquet("data/parquet/panel.parquet")
+panel = panel[(panel["date"] >= "2023-01-01") & (panel["date"] <= "2025-06-01")]
 
-# 对偏离度取残差，看集中度是否还有独立信息
-def _resid(g):
-    g = g.dropna(subset=["conc", "evwma_dev"])
-    if len(g) < 10:
-        return pd.Series(np.nan, index=g.index)
-    beta = np.polyfit(g["evwma_dev"], g["conc"], 1)
-    return pd.Series(g["conc"] - np.polyval(beta, g["evwma_dev"]), index=g.index)
 
-panel["conc_resid"] = panel.groupby("date", group_keys=False).apply(_resid)
+def one(df, code="600519.SS"):
+    """取单只标的，转成 efincharts 需要的宽表。"""
+    x = df[df["code"] == code].sort_values("date").set_index("date")
+    x.columns = [c.capitalize() for c in x.columns]
+    return x
 
-print("\n--- 剔除偏离度后的残差 ---")
-print(ic_summary(cross_section_ic(panel, "conc_resid", "forward_5")))
+# 287 只、2023-01 至 2025-06，横截面才有统计意义
+src = panel.copy()
+d = src.copy()
+
+# 1. 算指标
+d = ettr.evwma(d, n=10)
+
+
+# 2. 因子 + 未来收益
+d["f"] = d["EVWMA_10"] / d.close - 1
+d = efc.add_next_return(d, periods=(1, 5, 20))
+
+# 3. 截面 IC 与分层
+ic = efc.ic_analysis(d, factor_cols="f",
+                      forward_cols=["forward_1", "forward_5", "forward_20"],
+                      method="spearman")
+print(efc.ir_analysis(ic).round(3))
+
+q = efc.quantile_analysis(d, factor_col="f", forward_col="forward_5", n_groups=5)
+print(q["summary"].round(4))
 ```
 
 几行结果有明确的阅读顺序。先看集中度与偏离度谁更强，两者接近说明增量有限；再看残差，残差的 IC 接近零，说明集中度的信息已被偏离度包含，EVWMA 相对 SMA 的优势没有落到预测上；最后看绝对值版本，它与带符号版本的方向可能不同。
+
+<!-- tab-ic:start -->
+**计算结果**
+
+| 前向期 | IC 均值 | IC 标准差 | ICIR | t 值 | IC>0 占比 | 期数 |
+|---|---|---|---|---|---|---|
+| T+1 | 0.0170 | 0.2398 | 0.071 | 1.69 | 0.5250 | 570 |
+| T+5 | 0.0175 | 0.2201 | 0.079 | 1.89 | 0.5190 | 566 |
+| T+20 | 0.0351 | 0.2068 | 0.170 | 3.98 | 0.5640 | 551 |
+
+表里最该看的是 t 值，不是 IC 均值。这个因子以 T+1 为主口径，IC 均值 0.0170、ICIR 0.071、t 值 1.69，在常规门槛下不显著，方向为正向。按第 007 章给出的日频门槛（ICIR 0.13 对应 t≈2），这个结果的含义是：还看不出与噪声的区别，不能据此构造策略。
+
+需要提醒的是，这只说明排序与未来收益之间存在可测的关联，不代表扣掉成本后还能剩下收益。横截面 IC 检验的是“买哪只”，不负责“值不值得交易”。
+
+**五档分层**
+
+| 分组 | 平均收益 | 标准差 | 期数 |
+|---|---|---|---|
+| 1 | +0.0042 | +0.0387 | 566 |
+| 2 | +0.0030 | +0.0295 | 566 |
+| 3 | +0.0021 | +0.0292 | 566 |
+| 4 | +0.0029 | +0.0339 | 566 |
+| 5 | +0.0048 | +0.0429 | 566 |
+
+五档分层看的是形状，不是单点。最高一档在第 5 组、最低在第 3 组，两端相差 +0.06%，组序号与平均收益的秩相关为 0.15，没有明显单调性。
+
+分层比 IC 更接近实盘，因为它直接给出“买最高档、卖最低档”的收益差。但这里的数字是毛收益，且没有考虑涨跌停买不进、停牌卖不出的情形，真实可得的差额会小于表中所列。
+<!-- tab-ic:end -->
 
 ## 择时能力
 
@@ -416,49 +491,117 @@ EVWMA 在时序上的优势比在截面上明显。均线信息本身就是时�
 ### R
 
 ```r
-# 沿用第 007 章定义的三种择时检验
-df <- panel |> filter(code == "600519.SS") |> arrange(date)
+library(ettr)
+library(efactorcraft)
+library(efincharts)
+library(ggplot2)
 
-cat("--- 信号触发日检验（偏离度高于 80 分位）---\n")
-print(timing_signal_test(df, "evwma_dev", "forward_5", upper = 0.8))
+# 本地数据由 xquant-db 导出，字段见 data/README.md
+# 同一章会多次用到这两份数据，这里读一次缓存起来，避免反复解压
+.cache <- new.env(parent = emptyenv())
+.blue <- function() {
+  if (!exists("b", .cache)) {
+    b <- read.csv("data/parquet/panel_blue_chip.csv", stringsAsFactors = FALSE)
+    b$date <- as.Date(b$date)
+    assign("b", b, .cache)
+  }
+  get("b", .cache)
+}
+.panel <- function() {
+  if (!exists("p", .cache)) {
+    # 287 只的完整面板压成 gz，read.csv 支持 gz
+    p <- read.csv("data/parquet/panel_r.csv.gz", stringsAsFactors = FALSE)
+    p$date <- as.Date(p$date)
+    p <- p[p$date >= "2023-01-01" & p$date <= "2025-06-01", ]
+    assign("p", p, .cache)
+  }
+  get("p", .cache)
+}
+blue  <- .blue()
+panel <- .panel()
 
-cat("\n--- 条件分位收益（偏离度分五档）---\n")
-print(conditional_quantile_return(df, "evwma_dev", "forward_5", q = 5))
+# efincharts 要求 xts 且列名带 Adjusted
+as_xts <- function(df) {
+  x <- xts::xts(df[, c("open", "high", "low", "close", "volume", "adjusted")],
+                order.by = df$date)
+  colnames(x) <- c("Open", "High", "Low", "Close", "Volume", "Adjusted")
+  x
+}
 
-cat("\n--- 择时策略与买入持有对照 ---\n")
-print(timing_backtest(df, "evwma_dev", "forward_5", entry_q = 0.7))
-
-# 集中度极值日的后续收益，与其余交易日对照
-df |>
-  mutate(集中 = as.integer(conc_abs > quantile(conc_abs, 0.9, na.rm = TRUE))) |>
-  group_by(集中) |>
-  summarise(样本数 = n(),
-            平均未来五日收益 = round(mean(forward_5, na.rm = TRUE), 4),
-            .groups = "drop") |>
-  print()
+idx <- read.csv("data/parquet/index_daily.csv", stringsAsFactors = FALSE)
+idx$date <- as.Date(idx$date)
+t <- idx[idx$code == "510300.SS", ]
+t <- add_evwma(t, n = 10)
+t$f <- t$`EVWMA` / t$close - 1
+t$forward_5 <- c(tail(t$close, -5) / head(t$close, -5) - 1, rep(NA, 5))
+t$q <- cut(t$f, quantile(t$f, 0:5/5, na.rm = TRUE), include.lowest = TRUE, labels = FALSE)
+print(aggregate(forward_5 ~ q, data = t, FUN = function(x)
+  c(mean = mean(x, na.rm = TRUE), n = sum(!is.na(x)))))
 ```
 
 ### Python
 
 ```python
-# 沿用第 007 章定义的三种择时检验
-df = panel[panel["code"] == "600519.SS"].sort_values("date").copy()
+import pandas as pd
+import ettr
+import efactorcraft as efc
+import efincharts as efc_
 
-print("--- 信号触发日检验（偏离度高于 80 分位）---")
-print(timing_signal_test(df, "evwma_dev", "forward_5", upper=0.8))
+# 中文字体：mplfinance 会用 style 里的 rc 覆盖全局设置，必须写进 style
+from efincharts import theme
+theme.efin_style["rc"] = {
+    "font.sans-serif": ["PingFang SC", "Heiti SC", "SimHei"],
+    "axes.unicode_minus": False,
+    "font.family": "sans-serif",
+}
 
-print("\n--- 条件分位收益（偏离度分五档）---")
-print(conditional_quantile_return(df, "evwma_dev", "forward_5", q=5))
+# 本地数据由 xquant-db 导出，字段见 data/README.md
+blue = pd.read_parquet("data/parquet/panel_blue_chip.parquet")
+panel = pd.read_parquet("data/parquet/panel.parquet")
+panel = panel[(panel["date"] >= "2023-01-01") & (panel["date"] <= "2025-06-01")]
 
-print("\n--- 择时策略与买入持有对照 ---")
-print(timing_backtest(df, "evwma_dev", "forward_5", entry_q=0.7))
 
-# 集中度极值日的后续收益，与其余交易日对照
-print(df.assign(集中=(df["conc_abs"] > df["conc_abs"].quantile(0.9)).astype(int))
-      .groupby("集中")["forward_5"].agg(["count", "mean"]).round(4))
+def one(df, code="600519.SS"):
+    """取单只标的，转成 efincharts 需要的宽表。"""
+    x = df[df["code"] == code].sort_values("date").set_index("date")
+    x.columns = [c.capitalize() for c in x.columns]
+    return x
+
+# 择时检验用 ETF 做市场载体，指数本身没有日线数据
+idx = pd.read_parquet("data/parquet/index_daily.parquet")
+idx = idx[idx["code"] == "510300.SS"].sort_values("date")
+t = idx.copy()
+
+# 1. 在 ETF 上算同一个指标
+t = ettr.evwma(d, n=10)
+
+
+# 2. 按因子分位看未来 5 日收益
+t["f"] = t["EVWMA_10"] / t.close - 1
+t["forward_5"] = t["close"].shift(-5) / t["close"] - 1
+# 因子可能有重复值，先按名次切，避免 qcut 报边界不唯一
+t["q"] = pd.qcut(t["f"].rank(method="first"), 5, labels=False) + 1
+t = t.dropna(subset=["f", "forward_5"])
+print(t.groupby("q")["forward_5"].agg(["mean", "count"]).round(4))
 ```
 
 最后一行最值得看。集中度处于高位的那批交易日，若后续收益明显不同于其余日子，说明成交集中本身带有预测信息；若两者接近，说明它只是对已发生行情的描述。前者支持把集中度做成因子，后者只支持做成状态标签。
+
+<!-- tab-timing:start -->
+**分位收益**
+
+| 分位 | 未来 5 日均值 | 样本数 |
+|---|---|---|
+| 1 | +0.0016 | 221 |
+| 2 | -0.0028 | 220 |
+| 3 | +0.0004 | 220 |
+| 4 | -0.0008 | 220 |
+| 5 | +0.0016 | 220 |
+
+择时口径与截面不同：这里只有一个标的，看的是同一标的在不同分位下的未来收益。最高与最低分位相差 +0.00%。单标的样本有限，这个差额很容易被一两段行情主导，只能作为方向参考。
+
+真正做择时要问的是三件事：分位阈值是否稳定、换手是否可控、扣成本后是否还有剩余。三者缺一，择时信号就只是图上好看。
+<!-- tab-timing:end -->
 
 ## 组合使用与验证
 
@@ -473,64 +616,197 @@ EVWMA 的搭档有三个。与价格动量搭配最自然：动量给方向，�
 ### R
 
 ```r
-# 沿用第 007 章定义的 combined_signal
-panel <- panel |>
-  group_by(code) |>
-  mutate(mom20 = close / dplyr::lag(close, 20) - 1) |>
-  ungroup()
+library(ettr)
+library(efactorcraft)
+library(efincharts)
+library(ggplot2)
 
-panel |>
-  group_by(date) |>
-  filter(!is.na(conc), !is.na(mom20)) |>
-  summarise(rho = cor(conc, mom20, method = "spearman",
-                      use = "complete.obs"), .groups = "drop") |>
-  summarise(平均相关 = round(mean(rho, na.rm = TRUE), 3)) |>
-  print()
+# 本地数据由 xquant-db 导出，字段见 data/README.md
+# 同一章会多次用到这两份数据，这里读一次缓存起来，避免反复解压
+.cache <- new.env(parent = emptyenv())
+.blue <- function() {
+  if (!exists("b", .cache)) {
+    b <- read.csv("data/parquet/panel_blue_chip.csv", stringsAsFactors = FALSE)
+    b$date <- as.Date(b$date)
+    assign("b", b, .cache)
+  }
+  get("b", .cache)
+}
+.panel <- function() {
+  if (!exists("p", .cache)) {
+    # 287 只的完整面板压成 gz，read.csv 支持 gz
+    p <- read.csv("data/parquet/panel_r.csv.gz", stringsAsFactors = FALSE)
+    p$date <- as.Date(p$date)
+    p <- p[p$date >= "2023-01-01" & p$date <= "2025-06-01", ]
+    assign("p", p, .cache)
+  }
+  get("p", .cache)
+}
+blue  <- .blue()
+panel <- .panel()
 
-panel <- combined_signal(panel, c("conc", "mom20"))
+# efincharts 要求 xts 且列名带 Adjusted
+as_xts <- function(df) {
+  x <- xts::xts(df[, c("open", "high", "low", "close", "volume", "adjusted")],
+                order.by = df$date)
+  colnames(x) <- c("Open", "High", "Low", "Close", "Volume", "Adjusted")
+  x
+}
 
-cat("\n--- 组合 vs 单特征 ---\n")
-print(ic_summary(cross_section_ic(panel, "combined", "forward_5")))
-print(ic_summary(cross_section_ic(panel, "conc", "forward_5")))
-print(ic_summary(cross_section_ic(panel, "mom20", "forward_5")))
+d <- .panel()
+d <- add_evwma(d, n = 10)
+d$f1 <- d$`EVWMA` / d$close - 1
+d <- add_cmf(d, n = 20)
+d$f2 <- d$CMF
+d <- add_next_return(d, close_col = "close", n = 5)
+ic1 <- ic_analysis(d, factor_cols = c("f1", "f2"),
+                    forward_cols = "forward_5", method = "spearman")
+print(ir_analysis(ic1))
 ```
 
 ```r
-# 组合的择时验证（沿用第 007 章定义的 timing_backtest）
-df2 <- panel |>
-  filter(code == "600519.SS") |>
-  arrange(date) |>
-  mutate(ema20 = as.numeric(TTR::EMA(close, 20)),
-         cond = as.integer(evwma20 > ema20 & close > evwma20))
+library(ettr)
+library(efactorcraft)
+library(efincharts)
+library(ggplot2)
 
-print(timing_backtest(df2, "cond", "forward_5", entry_q = 0.5))
+# 本地数据由 xquant-db 导出，字段见 data/README.md
+# 同一章会多次用到这两份数据，这里读一次缓存起来，避免反复解压
+.cache <- new.env(parent = emptyenv())
+.blue <- function() {
+  if (!exists("b", .cache)) {
+    b <- read.csv("data/parquet/panel_blue_chip.csv", stringsAsFactors = FALSE)
+    b$date <- as.Date(b$date)
+    assign("b", b, .cache)
+  }
+  get("b", .cache)
+}
+.panel <- function() {
+  if (!exists("p", .cache)) {
+    # 287 只的完整面板压成 gz，read.csv 支持 gz
+    p <- read.csv("data/parquet/panel_r.csv.gz", stringsAsFactors = FALSE)
+    p$date <- as.Date(p$date)
+    p <- p[p$date >= "2023-01-01" & p$date <= "2025-06-01", ]
+    assign("p", p, .cache)
+  }
+  get("p", .cache)
+}
+blue  <- .blue()
+panel <- .panel()
+
+# efincharts 要求 xts 且列名带 Adjusted
+as_xts <- function(df) {
+  x <- xts::xts(df[, c("open", "high", "low", "close", "volume", "adjusted")],
+                order.by = df$date)
+  colnames(x) <- c("Open", "High", "Low", "Close", "Volume", "Adjusted")
+  x
+}
+
+d <- .panel()
+d <- add_evwma(d, n = 10)
+d$f1 <- d$`EVWMA` / d$close - 1
+d <- add_cmf(d, n = 20)
+d$f2 <- d$CMF
+d <- add_next_return(d, close_col = "close", n = 5)
+ic1 <- ic_analysis(d, factor_cols = c("f1", "f2"),
+                    forward_cols = "forward_5", method = "spearman")
+print(ir_analysis(ic1))
 ```
 
 ### Python
 
 ```python
-# 沿用第 007 章定义的 combined_signal
-panel["mom20"] = panel["close"] / grp["close"].shift(20) - 1
+import pandas as pd
+import ettr
+import efactorcraft as efc
+import efincharts as efc_
 
-rho = panel.groupby("date").apply(
-    lambda g: g[["conc", "mom20"]].corr(method="spearman").iloc[0, 1])
-print("两个特征的平均横截面相关：", round(rho.mean(), 3))
+# 中文字体：mplfinance 会用 style 里的 rc 覆盖全局设置，必须写进 style
+from efincharts import theme
+theme.efin_style["rc"] = {
+    "font.sans-serif": ["PingFang SC", "Heiti SC", "SimHei"],
+    "axes.unicode_minus": False,
+    "font.family": "sans-serif",
+}
 
-panel = combined_signal(panel, ["conc", "mom20"])
+# 本地数据由 xquant-db 导出，字段见 data/README.md
+blue = pd.read_parquet("data/parquet/panel_blue_chip.parquet")
+panel = pd.read_parquet("data/parquet/panel.parquet")
+panel = panel[(panel["date"] >= "2023-01-01") & (panel["date"] <= "2025-06-01")]
 
-print("\n--- 组合 vs 单特征 ---")
-print(ic_summary(cross_section_ic(panel, "combined", "forward_5")))
-print(ic_summary(cross_section_ic(panel, "conc", "forward_5")))
-print(ic_summary(cross_section_ic(panel, "mom20", "forward_5")))
+
+def one(df, code="600519.SS"):
+    """取单只标的，转成 efincharts 需要的宽表。"""
+    x = df[df["code"] == code].sort_values("date").set_index("date")
+    x.columns = [c.capitalize() for c in x.columns]
+    return x
+
+d = panel.copy()
+
+# 1. 本章因子
+d = ettr.evwma(d, n=10)
+d["f1"] = d["EVWMA_10"] / d.close - 1
+
+# 2. 配一个量价因子做对照
+d = ettr.cmf(d, n=20)
+d["f2"] = d["CMF_20"]
+d = efc.add_next_return(d, periods=(5,))
+
+# 3. 单因子与等权组合的信息比率
+ic = efc.ic_analysis(d, factor_cols=["f1", "f2"], forward_cols=["forward_5"],
+                      method="spearman")
+d = efc.equal_weighted_composite(d, factor_cols=["f1", "f2"], new_col="f1_f2")
+ic2 = efc.ic_analysis(d, factor_cols=["f1_f2"], forward_cols=["forward_5"],
+                      method="spearman")
+ic.update(ic2)
+print(efc.ir_analysis(ic).round(3))
 ```
 
 ```python
-# 组合的择时验证（沿用第 007 章定义的 timing_backtest）
-df2 = panel[panel["code"] == "600519.SS"].sort_values("date").copy()
-df2["ema20"] = df2["close"].ewm(span=20, adjust=False).mean()
-df2["cond"] = ((df2["evwma20"] > df2["ema20"]) & (df2["close"] > df2["evwma20"])).astype(int)
+import pandas as pd
+import ettr
+import efactorcraft as efc
+import efincharts as efc_
 
-print(timing_backtest(df2, "cond", "forward_5", entry_q=0.5))
+# 中文字体：mplfinance 会用 style 里的 rc 覆盖全局设置，必须写进 style
+from efincharts import theme
+theme.efin_style["rc"] = {
+    "font.sans-serif": ["PingFang SC", "Heiti SC", "SimHei"],
+    "axes.unicode_minus": False,
+    "font.family": "sans-serif",
+}
+
+# 本地数据由 xquant-db 导出，字段见 data/README.md
+blue = pd.read_parquet("data/parquet/panel_blue_chip.parquet")
+panel = pd.read_parquet("data/parquet/panel.parquet")
+panel = panel[(panel["date"] >= "2023-01-01") & (panel["date"] <= "2025-06-01")]
+
+
+def one(df, code="600519.SS"):
+    """取单只标的，转成 efincharts 需要的宽表。"""
+    x = df[df["code"] == code].sort_values("date").set_index("date")
+    x.columns = [c.capitalize() for c in x.columns]
+    return x
+
+d = panel.copy()
+
+# 1. 本章因子
+d = ettr.evwma(d, n=10)
+d["f1"] = d["EVWMA_10"] / d.close - 1
+
+# 2. 配一个量价因子做对照
+d = ettr.cmf(d, n=20)
+d["f2"] = d["CMF_20"]
+d = efc.add_next_return(d, periods=(5,))
+
+# 3. 单因子与等权组合的信息比率
+ic = efc.ic_analysis(d, factor_cols=["f1", "f2"], forward_cols=["forward_5"],
+                      method="spearman")
+d = efc.equal_weighted_composite(d, factor_cols=["f1", "f2"], new_col="f1_f2")
+ic2 = efc.ic_analysis(d, factor_cols=["f1_f2"], forward_cols=["forward_5"],
+                      method="spearman")
+ic.update(ic2)
+print(efc.ir_analysis(ic).round(3))
 ```
 
 三行输出并排读：组合高于两者说明互补，落在中间说明只是平均，低于两者说明信号冲突。择时那一组再看持仓比例，双重条件往往只覆盖两三成交易日，夏普的提升要折算到同等仓位后再比较。

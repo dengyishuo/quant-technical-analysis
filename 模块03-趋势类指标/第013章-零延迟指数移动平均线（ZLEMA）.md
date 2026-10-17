@@ -117,84 +117,107 @@ ZLEMA 把"零延迟"写进名字，但名字不是检验结果。均线规则族
 ### R
 
 ```r
-# 1. 加载包
-library(quantmod)
-library(TTR)
+library(ettr)
+library(efactorcraft)
+library(efincharts)
+library(ggplot2)
 
-# 2. 获取数据
-panel <- read.csv("data/parquet/panel_blue_chip.csv", stringsAsFactors = FALSE)
-.sub <- panel[panel$code == "600519.SS", ]
-data <- xts::xts(.sub[, c("open", "high", "low", "close", "volume", "adjusted")],
-                 order.by = as.Date(.sub$date))
-colnames(data) <- c("Open", "High", "Low", "Close", "Volume", "Adjusted")
-close_price <- Cl(data)
+# 本地数据由 xquant-db 导出，字段见 data/README.md
+# 同一章会多次用到这两份数据，这里读一次缓存起来，避免反复解压
+.cache <- new.env(parent = emptyenv())
+.blue <- function() {
+  if (!exists("b", .cache)) {
+    b <- read.csv("data/parquet/panel_blue_chip.csv", stringsAsFactors = FALSE)
+    b$date <- as.Date(b$date)
+    assign("b", b, .cache)
+  }
+  get("b", .cache)
+}
+.panel <- function() {
+  if (!exists("p", .cache)) {
+    # 287 只的完整面板压成 gz，read.csv 支持 gz
+    p <- read.csv("data/parquet/panel_r.csv.gz", stringsAsFactors = FALSE)
+    p$date <- as.Date(p$date)
+    p <- p[p$date >= "2023-01-01" & p$date <= "2025-06-01", ]
+    assign("p", p, .cache)
+  }
+  get("p", .cache)
+}
+blue  <- .blue()
+panel <- .panel()
 
-# 3. 计算 ZLEMA，并与同周期 EMA 对比
-zlema_20 <- ZLEMA(close_price, n = 20)
-ema_20   <- EMA(close_price, n = 20)
+# efincharts 要求 xts 且列名带 Adjusted
+as_xts <- function(df) {
+  x <- xts::xts(df[, c("open", "high", "low", "close", "volume", "adjusted")],
+                order.by = df$date)
+  colnames(x) <- c("Open", "High", "Low", "Close", "Volume", "Adjusted")
+  x
+}
 
-# 4. 识别信号：ZLEMA 拐头方向
-turn_up   <- Lag(zlema_20) < zlema_20 & Lag(zlema_20, 2) >= Lag(zlema_20)
-turn_down <- Lag(zlema_20) > zlema_20 & Lag(zlema_20, 2) <= Lag(zlema_20)
-cat("向上拐头次数：", sum(turn_up, na.rm = TRUE), "\n")
-cat("向下拐头次数：", sum(turn_down, na.rm = TRUE), "\n")
+maotai <- .blue()[.blue()$code == "600519.SS", ]
 
-# 5. 绘图
-chartSeries(data, theme = "white", name = "贵州茅台",
-  TA = "addZLEMA(n = 20, col = 'darkgreen'); addEMA(n = 20, col = 'blue')")
+# 1. ettr 在长格式面板上追加指标列
+maotai <- add_zlema(maotai, n = 20)
 
-# 6. 输出统计：ZLEMA 相对 EMA 的平均提前量（以价格偏离衡量）
-lead <- mean((zlema_20 - ema_20), na.rm = TRUE)
-cat("ZLEMA20 与 EMA20 的平均价差：", round(lead, 3), "元\n")
+# 2. 基本统计
+cols <- setdiff(names(maotai), names(blue))
+print(summary(maotai[, cols]))
+
+# 3. K 线 + 成交量 + 均线
+ch <- ecandlesticks(as_xts(maotai), show_ma = TRUE, ma_periods = c(20, 60),
+                    title = "贵州茅台 · 零延迟指数移动平均线")
+ggsave("assets/figures/ch013/indicator_r.png", ch$combined_plot,
+       width = 10, height = 6, dpi = 110)
 ```
 
 ### Python
 
 ```python
-import matplotlib
-matplotlib.rcParams["font.sans-serif"] = ["PingFang SC", "SimHei", "Arial Unicode MS"]
-matplotlib.rcParams["axes.unicode_minus"] = False
-import numpy as np
 import pandas as pd
+import ettr
+import efactorcraft as efc
+import efincharts as efc_
 
-# 本地数据，由 xquant-db 导出，字段见 data/README.md
-_panel = pd.read_parquet("data/parquet/panel_blue_chip.parquet")
-import matplotlib.pyplot as plt
+# 中文字体：mplfinance 会用 style 里的 rc 覆盖全局设置，必须写进 style
+from efincharts import theme
+theme.efin_style["rc"] = {
+    "font.sans-serif": ["PingFang SC", "Heiti SC", "SimHei"],
+    "axes.unicode_minus": False,
+    "font.family": "sans-serif",
+}
 
-# 1. 获取数据
-_panel = pd.read_parquet("data/parquet/panel_blue_chip.parquet")
-data = (_panel[_panel["code"] == "600519.SS"]
-        .set_index("date").sort_index()[["open", "high", "low", "close", "volume"]])
-data.columns = ["Open", "High", "Low", "Close", "Volume"]
-close = data["Close"].squeeze()
+# 本地数据由 xquant-db 导出，字段见 data/README.md
+blue = pd.read_parquet("data/parquet/panel_blue_chip.parquet")
+panel = pd.read_parquet("data/parquet/panel.parquet")
+panel = panel[(panel["date"] >= "2023-01-01") & (panel["date"] <= "2025-06-01")]
 
-# 2. 手写 ZLEMA：先去滞后，再做指数平滑
-n = 20
-lag = (n - 1) // 2
-alpha = 2 / (n + 1)
 
-df = pd.DataFrame({"close": close})
-df["d"] = 2 * df["close"] - df["close"].shift(lag)   # 去滞后价格
-df["zlema"] = df["d"].ewm(alpha=alpha, adjust=False).mean()
-df["ema"] = df["close"].ewm(alpha=alpha, adjust=False).mean()
+def one(df, code="600519.SS"):
+    """取单只标的，转成 efincharts 需要的宽表。"""
+    x = df[df["code"] == code].sort_values("date").set_index("date")
+    x.columns = [c.capitalize() for c in x.columns]
+    return x
 
-# 3. 识别拐头
-df["turn_up"] = (df["zlema"] > df["zlema"].shift(1)) & (df["zlema"].shift(1) <= df["zlema"].shift(2))
-print("向上拐头次数：", int(df["turn_up"].sum()))
+# 1. 取单只标的
+maotai = blue[blue['code'] == '600519.SS'].copy()
 
-# 4. 绘图
-fig, ax = plt.subplots(figsize=(12, 5))
-ax.plot(df.index, df["close"], label="收盘价", color="#333", linewidth=1)
-ax.plot(df.index, df["ema"], label="EMA20", color="#2f6fb5")
-ax.plot(df.index, df["zlema"], label="ZLEMA20", color="#1e8449")
-ax.set_title("贵州茅台 ZLEMA20 与 EMA20 对照")
-ax.legend()
-plt.tight_layout()
-plt.show()
+# 2. ettr 在长格式面板上追加指标列，不需要手工 rolling
+maotai = ettr.zlema(maotai, n=20)
 
-# 5. 输出统计
-print("ZLEMA20 与 EMA20 的平均价差：", round((df["zlema"] - df["ema"]).mean(), 3))
+cols = [c for c in maotai.columns if c not in blue.columns]
+print(maotai[cols].describe().round(3))
+
+# 3. 画图：K 线 + 成交量 + 指标面板
+px = one(maotai)
+ch = efc_.candlestick(px, volume=True, title="贵州茅台 · 零延迟指数移动平均线")
+ch.save("assets/figures/ch013/indicator.png")
 ```
+
+<!-- fig-indicator:start -->
+![图 13-1　零延迟指数移动平均线在贵州茅台上的读数（2023-01 至 2025-06）](../assets/figures/ch013/indicator.png)
+
+<p class="figcap">图 13-1　零延迟指数移动平均线在贵州茅台上的读数（2023-01 至 2025-06）</p>
+<!-- fig-indicator:end -->
 
 ## 拆解
 
@@ -216,36 +239,88 @@ ZLEMA 与价格同量纲，均线值不能直接横向比较。它的特别之�
 ### R
 
 ```r
-# 沿用第 007 章口径，拆解四个特征
-panel <- panel |>
-  group_by(code) |>
-  mutate(zlema20 = TTR::ZLEMA(close, 20),
-         ema20 = TTR::EMA(close, 20),
-         zlema_dev = close / zlema20 - 1,
-         zlema_slope = zlema20 / dplyr::lag(zlema20, 5) - 1,
-         zl_gap = zlema20 / ema20 - 1,
-         r_lag = close / dplyr::lag(close, 9) - 1) |>
-  ungroup()
+library(ettr)
+library(efactorcraft)
+library(efincharts)
+library(ggplot2)
 
-panel |> select(zlema_dev, zlema_slope, zl_gap, r_lag) |>
-  cor(use = "complete.obs", method = "spearman") |> print()
+# 本地数据由 xquant-db 导出，字段见 data/README.md
+# 同一章会多次用到这两份数据，这里读一次缓存起来，避免反复解压
+.cache <- new.env(parent = emptyenv())
+.blue <- function() {
+  if (!exists("b", .cache)) {
+    b <- read.csv("data/parquet/panel_blue_chip.csv", stringsAsFactors = FALSE)
+    b$date <- as.Date(b$date)
+    assign("b", b, .cache)
+  }
+  get("b", .cache)
+}
+.panel <- function() {
+  if (!exists("p", .cache)) {
+    # 287 只的完整面板压成 gz，read.csv 支持 gz
+    p <- read.csv("data/parquet/panel_r.csv.gz", stringsAsFactors = FALSE)
+    p$date <- as.Date(p$date)
+    p <- p[p$date >= "2023-01-01" & p$date <= "2025-06-01", ]
+    assign("p", p, .cache)
+  }
+  get("p", .cache)
+}
+blue  <- .blue()
+panel <- .panel()
+
+# efincharts 要求 xts 且列名带 Adjusted
+as_xts <- function(df) {
+  x <- xts::xts(df[, c("open", "high", "low", "close", "volume", "adjusted")],
+                order.by = df$date)
+  colnames(x) <- c("Open", "High", "Low", "Close", "Volume", "Adjusted")
+  x
+}
+
+d <- .blue()[.blue()$code == "600519.SS", ]
+d <- add_zlema(d, n = 20)
+
+# 转成无量纲因子
+d$f <- d$`ZLEMA_20` / d$close - 1
+
+print(summary(d$f))
 ```
 
 ### Python
 
 ```python
-# 沿用第 007 章口径，拆解四个特征
-g = panel.groupby("code")["close"]
-panel["d"] = 2 * panel["close"] - g.shift(9)
-panel["zlema20"] = panel.groupby("code")["d"].transform(
-    lambda s: s.ewm(alpha=2 / 21, adjust=False).mean())
-panel["zlema_dev"] = panel["close"] / panel["zlema20"] - 1
-panel["zlema_slope"] = panel["zlema20"] / panel.groupby("code")["zlema20"].shift(5) - 1
-panel["zl_gap"] = panel["zlema20"] / g.transform(
-    lambda s: s.ewm(span=20, adjust=False).mean()) - 1
-panel["r_lag"] = panel["close"] / g.shift(9) - 1
+import pandas as pd
+import ettr
+import efactorcraft as efc
+import efincharts as efc_
 
-print(panel[["zlema_dev", "zlema_slope", "zl_gap", "r_lag"]].corr(method="spearman"))
+# 中文字体：mplfinance 会用 style 里的 rc 覆盖全局设置，必须写进 style
+from efincharts import theme
+theme.efin_style["rc"] = {
+    "font.sans-serif": ["PingFang SC", "Heiti SC", "SimHei"],
+    "axes.unicode_minus": False,
+    "font.family": "sans-serif",
+}
+
+# 本地数据由 xquant-db 导出，字段见 data/README.md
+blue = pd.read_parquet("data/parquet/panel_blue_chip.parquet")
+panel = pd.read_parquet("data/parquet/panel.parquet")
+panel = panel[(panel["date"] >= "2023-01-01") & (panel["date"] <= "2025-06-01")]
+
+
+def one(df, code="600519.SS"):
+    """取单只标的，转成 efincharts 需要的宽表。"""
+    x = df[df["code"] == code].sort_values("date").set_index("date")
+    x.columns = [c.capitalize() for c in x.columns]
+    return x
+
+# 1. 先在面板上算原始指标
+d = panel.copy()
+d = ettr.zlema(d, n=20)
+
+# 2. 转成无量纲因子，才能跨标的排序
+d["f"] = d["ZLEMA_20"] / d.close - 1
+
+print(d["f"].describe().round(4))
 ```
 
 ## 截面选股能力
@@ -263,48 +338,136 @@ $$f^{gap}_t = \frac{\mathrm{ZLEMA}_t}{\mathrm{EMA}_t} - 1$$
 ### R
 
 ```r
-# 沿用第 007 章定义的 cross_section_ic / ic_summary / layered_returns
-panel <- panel |>
-  group_by(code) |>
-  mutate(ema_dev = close / TTR::EMA(close, 20) - 1) |>
-  ungroup()
+library(ettr)
+library(efactorcraft)
+library(efincharts)
+library(ggplot2)
 
-# 去滞后是否优于普通 EMA，以及窗口位移本身的预测力
-ic_zl <- cross_section_ic(panel, "zlema_dev", "forward_5")
-ic_ema <- cross_section_ic(panel, "ema_dev", "forward_5")
-common <- intersect(names(ic_zl), names(ic_ema))
-d <- ic_zl[common] - ic_ema[common]
-cat("IC 差值均值：", round(mean(d), 4), " t 值：",
-    round(mean(d) / sd(d) * sqrt(length(d)), 2), "\n")
+# 本地数据由 xquant-db 导出，字段见 data/README.md
+# 同一章会多次用到这两份数据，这里读一次缓存起来，避免反复解压
+.cache <- new.env(parent = emptyenv())
+.blue <- function() {
+  if (!exists("b", .cache)) {
+    b <- read.csv("data/parquet/panel_blue_chip.csv", stringsAsFactors = FALSE)
+    b$date <- as.Date(b$date)
+    assign("b", b, .cache)
+  }
+  get("b", .cache)
+}
+.panel <- function() {
+  if (!exists("p", .cache)) {
+    # 287 只的完整面板压成 gz，read.csv 支持 gz
+    p <- read.csv("data/parquet/panel_r.csv.gz", stringsAsFactors = FALSE)
+    p$date <- as.Date(p$date)
+    p <- p[p$date >= "2023-01-01" & p$date <= "2025-06-01", ]
+    assign("p", p, .cache)
+  }
+  get("p", .cache)
+}
+blue  <- .blue()
+panel <- .panel()
 
-print(ic_summary(ic_zl))
-print(ic_summary(ic_ema))
-print(ic_summary(cross_section_ic(panel, "r_lag", "forward_5")))
-print(layered_returns(panel, "zlema_dev", "forward_5"))
+# efincharts 要求 xts 且列名带 Adjusted
+as_xts <- function(df) {
+  x <- xts::xts(df[, c("open", "high", "low", "close", "volume", "adjusted")],
+                order.by = df$date)
+  colnames(x) <- c("Open", "High", "Low", "Close", "Volume", "Adjusted")
+  x
+}
+
+d <- .panel()
+d <- add_zlema(d, n = 20)
+
+d$f <- d$`ZLEMA_20` / d$close - 1
+d <- add_next_return(d, close_col = "close", n = c(1, 5, 20))
+
+ic <- ic_analysis(d, factor_cols = "f",
+                    forward_cols = c("forward_1", "forward_5", "forward_20"),
+                    method = "spearman")
+print(ir_analysis(ic))
+
+q <- quantile_analysis(d, factor_cols = "f", forward_cols = "forward_5",
+                       n_groups = 5)
+print(q$f$summary)
 ```
 
 ### Python
 
 ```python
-# 沿用第 007 章定义的 cross_section_ic / ic_summary / layered_returns
-import numpy as np
+import pandas as pd
+import ettr
+import efactorcraft as efc
+import efincharts as efc_
 
-panel["ema_dev"] = panel["close"] / panel.groupby("code")["close"].transform(
-    lambda s: s.ewm(span=20, adjust=False).mean()) - 1
+# 中文字体：mplfinance 会用 style 里的 rc 覆盖全局设置，必须写进 style
+from efincharts import theme
+theme.efin_style["rc"] = {
+    "font.sans-serif": ["PingFang SC", "Heiti SC", "SimHei"],
+    "axes.unicode_minus": False,
+    "font.family": "sans-serif",
+}
 
-# 去滞后是否优于普通 EMA，以及窗口位移本身的预测力
-ic_zl = cross_section_ic(panel, "zlema_dev", "forward_5")
-ic_ema = cross_section_ic(panel, "ema_dev", "forward_5")
-common = ic_zl.index.intersection(ic_ema.index)
-d = ic_zl[common] - ic_ema[common]
-print("IC 差值均值：", round(d.mean(), 4), " t 值：",
-      round(d.mean() / d.std() * np.sqrt(len(d)), 2))
+# 本地数据由 xquant-db 导出，字段见 data/README.md
+blue = pd.read_parquet("data/parquet/panel_blue_chip.parquet")
+panel = pd.read_parquet("data/parquet/panel.parquet")
+panel = panel[(panel["date"] >= "2023-01-01") & (panel["date"] <= "2025-06-01")]
 
-print(ic_summary(ic_zl))
-print(ic_summary(ic_ema))
-print(ic_summary(cross_section_ic(panel, "r_lag", "forward_5")))
-print(layered_returns(panel, "zlema_dev", "forward_5"))
+
+def one(df, code="600519.SS"):
+    """取单只标的，转成 efincharts 需要的宽表。"""
+    x = df[df["code"] == code].sort_values("date").set_index("date")
+    x.columns = [c.capitalize() for c in x.columns]
+    return x
+
+# 287 只、2023-01 至 2025-06，横截面才有统计意义
+src = panel.copy()
+d = src.copy()
+
+# 1. 算指标
+d = ettr.zlema(d, n=20)
+
+
+# 2. 因子 + 未来收益
+d["f"] = d["ZLEMA_20"] / d.close - 1
+d = efc.add_next_return(d, periods=(1, 5, 20))
+
+# 3. 截面 IC 与分层
+ic = efc.ic_analysis(d, factor_cols="f",
+                      forward_cols=["forward_1", "forward_5", "forward_20"],
+                      method="spearman")
+print(efc.ir_analysis(ic).round(3))
+
+q = efc.quantile_analysis(d, factor_col="f", forward_col="forward_5", n_groups=5)
+print(q["summary"].round(4))
 ```
+
+<!-- tab-ic:start -->
+**计算结果**
+
+| 前向期 | IC 均值 | IC 标准差 | ICIR | t 值 | IC>0 占比 | 期数 |
+|---|---|---|---|---|---|---|
+| T+1 | 0.0097 | 0.2191 | 0.044 | 1.04 | 0.5060 | 561 |
+| T+5 | -0.0081 | 0.1956 | -0.041 | -0.98 | 0.4780 | 557 |
+| T+20 | -0.0018 | 0.1968 | -0.009 | -0.21 | 0.5000 | 542 |
+
+表里最该看的是 t 值，不是 IC 均值。这个因子以 T+1 为主口径，IC 均值 0.0097、ICIR 0.044、t 值 1.04，在常规门槛下不显著，方向为正向。按第 007 章给出的日频门槛（ICIR 0.13 对应 t≈2），这个结果的含义是：还看不出与噪声的区别，不能据此构造策略。
+
+需要提醒的是，这只说明排序与未来收益之间存在可测的关联，不代表扣掉成本后还能剩下收益。横截面 IC 检验的是“买哪只”，不负责“值不值得交易”。
+
+**五档分层**
+
+| 分组 | 平均收益 | 标准差 | 期数 |
+|---|---|---|---|
+| 1 | +0.0049 | +0.0374 | 557 |
+| 2 | +0.0029 | +0.0310 | 557 |
+| 3 | +0.0028 | +0.0310 | 557 |
+| 4 | +0.0030 | +0.0335 | 557 |
+| 5 | +0.0027 | +0.0402 | 557 |
+
+五档分层看的是形状，不是单点。最高一档在第 1 组、最低在第 5 组，两端相差 -0.22%，组序号与平均收益的秩相关为 -0.74，有方向但不严格单调。
+
+分层比 IC 更接近实盘，因为它直接给出“买最高档、卖最低档”的收益差。但这里的数字是毛收益，且没有考虑涨跌停买不进、停牌卖不出的情形，真实可得的差额会小于表中所列。
+<!-- tab-ic:end -->
 
 ## 择时能力
 
@@ -317,26 +480,115 @@ ZLEMA 的时序信号分三层：拐头、价格穿越、过冲。拐头比同�
 ### R
 
 ```r
-# 沿用第 007 章定义的三种择时检验
-df <- panel |> filter(code == "600519.SS")
+library(ettr)
+library(efactorcraft)
+library(efincharts)
+library(ggplot2)
 
-# 去滞后量作为连续状态
-print(timing_signal_test(df, "zl_gap", "forward_5", upper = 0.8))
-print(conditional_quantile_return(df, "zl_gap", "forward_5", q = 5))
-print(timing_backtest(df, "zl_gap", "forward_5", entry_q = 0.7))
+# 本地数据由 xquant-db 导出，字段见 data/README.md
+# 同一章会多次用到这两份数据，这里读一次缓存起来，避免反复解压
+.cache <- new.env(parent = emptyenv())
+.blue <- function() {
+  if (!exists("b", .cache)) {
+    b <- read.csv("data/parquet/panel_blue_chip.csv", stringsAsFactors = FALSE)
+    b$date <- as.Date(b$date)
+    assign("b", b, .cache)
+  }
+  get("b", .cache)
+}
+.panel <- function() {
+  if (!exists("p", .cache)) {
+    # 287 只的完整面板压成 gz，read.csv 支持 gz
+    p <- read.csv("data/parquet/panel_r.csv.gz", stringsAsFactors = FALSE)
+    p$date <- as.Date(p$date)
+    p <- p[p$date >= "2023-01-01" & p$date <= "2025-06-01", ]
+    assign("p", p, .cache)
+  }
+  get("p", .cache)
+}
+blue  <- .blue()
+panel <- .panel()
+
+# efincharts 要求 xts 且列名带 Adjusted
+as_xts <- function(df) {
+  x <- xts::xts(df[, c("open", "high", "low", "close", "volume", "adjusted")],
+                order.by = df$date)
+  colnames(x) <- c("Open", "High", "Low", "Close", "Volume", "Adjusted")
+  x
+}
+
+idx <- read.csv("data/parquet/index_daily.csv", stringsAsFactors = FALSE)
+idx$date <- as.Date(idx$date)
+t <- idx[idx$code == "510300.SS", ]
+t <- add_zlema(t, n = 20)
+t$f <- t$`ZLEMA_20` / t$close - 1
+t$forward_5 <- c(tail(t$close, -5) / head(t$close, -5) - 1, rep(NA, 5))
+t$q <- cut(t$f, quantile(t$f, 0:5/5, na.rm = TRUE), include.lowest = TRUE, labels = FALSE)
+print(aggregate(forward_5 ~ q, data = t, FUN = function(x)
+  c(mean = mean(x, na.rm = TRUE), n = sum(!is.na(x)))))
 ```
 
 ### Python
 
 ```python
-# 沿用第 007 章定义的三种择时检验
-df = panel[panel["code"] == "600519.SS"].copy()
+import pandas as pd
+import ettr
+import efactorcraft as efc
+import efincharts as efc_
 
-# 去滞后量作为连续状态
-print(timing_signal_test(df, "zl_gap", "forward_5", upper=0.8))
-print(conditional_quantile_return(df, "zl_gap", "forward_5", q=5))
-print(timing_backtest(df, "zl_gap", "forward_5", entry_q=0.7))
+# 中文字体：mplfinance 会用 style 里的 rc 覆盖全局设置，必须写进 style
+from efincharts import theme
+theme.efin_style["rc"] = {
+    "font.sans-serif": ["PingFang SC", "Heiti SC", "SimHei"],
+    "axes.unicode_minus": False,
+    "font.family": "sans-serif",
+}
+
+# 本地数据由 xquant-db 导出，字段见 data/README.md
+blue = pd.read_parquet("data/parquet/panel_blue_chip.parquet")
+panel = pd.read_parquet("data/parquet/panel.parquet")
+panel = panel[(panel["date"] >= "2023-01-01") & (panel["date"] <= "2025-06-01")]
+
+
+def one(df, code="600519.SS"):
+    """取单只标的，转成 efincharts 需要的宽表。"""
+    x = df[df["code"] == code].sort_values("date").set_index("date")
+    x.columns = [c.capitalize() for c in x.columns]
+    return x
+
+# 择时检验用 ETF 做市场载体，指数本身没有日线数据
+idx = pd.read_parquet("data/parquet/index_daily.parquet")
+idx = idx[idx["code"] == "510300.SS"].sort_values("date")
+t = idx.copy()
+
+# 1. 在 ETF 上算同一个指标
+t = ettr.zlema(d, n=20)
+
+
+# 2. 按因子分位看未来 5 日收益
+t["f"] = t["ZLEMA_20"] / t.close - 1
+t["forward_5"] = t["close"].shift(-5) / t["close"] - 1
+# 因子可能有重复值，先按名次切，避免 qcut 报边界不唯一
+t["q"] = pd.qcut(t["f"].rank(method="first"), 5, labels=False) + 1
+t = t.dropna(subset=["f", "forward_5"])
+print(t.groupby("q")["forward_5"].agg(["mean", "count"]).round(4))
 ```
+
+<!-- tab-timing:start -->
+**分位收益**
+
+| 分位 | 未来 5 日均值 | 样本数 |
+|---|---|---|
+| 1 | +0.0033 | 219 |
+| 2 | -0.0021 | 218 |
+| 3 | -0.0037 | 218 |
+| 4 | -0.0021 | 218 |
+| 5 | +0.0044 | 218 |
+
+择时口径与截面不同：这里只有一个标的，看的是同一标的在不同分位下的未来收益。最高与最低分位相差 +0.11%。单标的样本有限，这个差额很容易被一两段行情主导，只能作为方向参考。
+
+真正做择时要问的是三件事：分位阈值是否稳定、换手是否可控、扣成本后是否还有剩余。三者缺一，择时信号就只是图上好看。
+<!-- tab-timing:end -->
 
 ## 组合使用与验证
 
@@ -351,92 +603,197 @@ ZLEMA 的搭档有三个。与波动率搭配，用高波动过滤过冲，只�
 ### R
 
 ```r
-# 沿用第 007 章定义的 combined_signal
-panel <- panel |>
-  group_by(date) |>
-  mutate(vol_ratio = volume / zoo::rollmean(volume, 20, fill = NA, align = "right")) |>
-  ungroup()
+library(ettr)
+library(efactorcraft)
+library(efincharts)
+library(ggplot2)
 
-rho <- panel |> group_by(date) |>
-  summarise(r = cor(zlema_dev, r_lag, method = "spearman", use = "complete.obs"))
-cat("偏离度与窗口位移的平均相关：", round(mean(rho$r, na.rm = TRUE), 3), "\n")
+# 本地数据由 xquant-db 导出，字段见 data/README.md
+# 同一章会多次用到这两份数据，这里读一次缓存起来，避免反复解压
+.cache <- new.env(parent = emptyenv())
+.blue <- function() {
+  if (!exists("b", .cache)) {
+    b <- read.csv("data/parquet/panel_blue_chip.csv", stringsAsFactors = FALSE)
+    b$date <- as.Date(b$date)
+    assign("b", b, .cache)
+  }
+  get("b", .cache)
+}
+.panel <- function() {
+  if (!exists("p", .cache)) {
+    # 287 只的完整面板压成 gz，read.csv 支持 gz
+    p <- read.csv("data/parquet/panel_r.csv.gz", stringsAsFactors = FALSE)
+    p$date <- as.Date(p$date)
+    p <- p[p$date >= "2023-01-01" & p$date <= "2025-06-01", ]
+    assign("p", p, .cache)
+  }
+  get("p", .cache)
+}
+blue  <- .blue()
+panel <- .panel()
 
-panel <- combined_signal(panel, c("zlema_dev", "vol_ratio"))
+# efincharts 要求 xts 且列名带 Adjusted
+as_xts <- function(df) {
+  x <- xts::xts(df[, c("open", "high", "low", "close", "volume", "adjusted")],
+                order.by = df$date)
+  colnames(x) <- c("Open", "High", "Low", "Close", "Volume", "Adjusted")
+  x
+}
 
-print(ic_summary(cross_section_ic(panel, "combined", "forward_5")))
-print(ic_summary(cross_section_ic(panel, "zlema_dev", "forward_5")))
-print(ic_summary(cross_section_ic(panel, "vol_ratio", "forward_5")))
+d <- .panel()
+d <- add_zlema(d, n = 20)
+d$f1 <- d$`ZLEMA_20` / d$close - 1
+d <- add_cmf(d, n = 20)
+d$f2 <- d$CMF
+d <- add_next_return(d, close_col = "close", n = 5)
+ic1 <- ic_analysis(d, factor_cols = c("f1", "f2"),
+                    forward_cols = "forward_5", method = "spearman")
+print(ir_analysis(ic1))
 ```
 
 ```r
-# 组合的择时验证（沿用第 007 章定义的 timing_backtest）
-df <- panel |>
-  filter(code == "600519.SS") |>
-  mutate(zlema20 = as.numeric(TTR::ZLEMA(close, 20)),
-         ema20 = as.numeric(TTR::EMA(close, 20)),
-         zlema_dev = close / zlema20 - 1,
-         zl_gap = zlema20 / ema20 - 1,
-         # 组合条件：价格在去滞后均线上方，且去滞后量为正
-         cond = as.integer(zlema_dev > 0 & zl_gap > 0))
+library(ettr)
+library(efactorcraft)
+library(efincharts)
+library(ggplot2)
 
-cat("--- 组合条件 ---\n")
-print(timing_backtest(df, "cond", "forward_5", entry_q = 0.5))
+# 本地数据由 xquant-db 导出，字段见 data/README.md
+# 同一章会多次用到这两份数据，这里读一次缓存起来，避免反复解压
+.cache <- new.env(parent = emptyenv())
+.blue <- function() {
+  if (!exists("b", .cache)) {
+    b <- read.csv("data/parquet/panel_blue_chip.csv", stringsAsFactors = FALSE)
+    b$date <- as.Date(b$date)
+    assign("b", b, .cache)
+  }
+  get("b", .cache)
+}
+.panel <- function() {
+  if (!exists("p", .cache)) {
+    # 287 只的完整面板压成 gz，read.csv 支持 gz
+    p <- read.csv("data/parquet/panel_r.csv.gz", stringsAsFactors = FALSE)
+    p$date <- as.Date(p$date)
+    p <- p[p$date >= "2023-01-01" & p$date <= "2025-06-01", ]
+    assign("p", p, .cache)
+  }
+  get("p", .cache)
+}
+blue  <- .blue()
+panel <- .panel()
 
-# 单条件对照
-df <- df |>
-  mutate(cond_dev = as.integer(zlema_dev > 0),
-         cond_gap = as.integer(zl_gap > 0))
+# efincharts 要求 xts 且列名带 Adjusted
+as_xts <- function(df) {
+  x <- xts::xts(df[, c("open", "high", "low", "close", "volume", "adjusted")],
+                order.by = df$date)
+  colnames(x) <- c("Open", "High", "Low", "Close", "Volume", "Adjusted")
+  x
+}
 
-cat("\n--- 仅偏离度 ---\n")
-print(timing_backtest(df, "cond_dev", "forward_5", entry_q = 0.5))
-
-cat("\n--- 仅去滞后量 ---\n")
-print(timing_backtest(df, "cond_gap", "forward_5", entry_q = 0.5))
+d <- .panel()
+d <- add_zlema(d, n = 20)
+d$f1 <- d$`ZLEMA_20` / d$close - 1
+d <- add_cmf(d, n = 20)
+d$f2 <- d$CMF
+d <- add_next_return(d, close_col = "close", n = 5)
+ic1 <- ic_analysis(d, factor_cols = c("f1", "f2"),
+                    forward_cols = "forward_5", method = "spearman")
+print(ir_analysis(ic1))
 ```
 
 ### Python
 
 ```python
-# 沿用第 007 章定义的 combined_signal
-panel["vol_ratio"] = panel["volume"] / panel.groupby("code")["volume"].transform(
-    lambda s: s.rolling(20).mean())
+import pandas as pd
+import ettr
+import efactorcraft as efc
+import efincharts as efc_
 
-rho = panel.groupby("date").apply(
-    lambda g: g[["zlema_dev", "r_lag"]].corr(method="spearman").iloc[0, 1])
-print("偏离度与窗口位移的平均相关：", round(rho.mean(), 3))
+# 中文字体：mplfinance 会用 style 里的 rc 覆盖全局设置，必须写进 style
+from efincharts import theme
+theme.efin_style["rc"] = {
+    "font.sans-serif": ["PingFang SC", "Heiti SC", "SimHei"],
+    "axes.unicode_minus": False,
+    "font.family": "sans-serif",
+}
 
-panel = combined_signal(panel, ["zlema_dev", "vol_ratio"])
+# 本地数据由 xquant-db 导出，字段见 data/README.md
+blue = pd.read_parquet("data/parquet/panel_blue_chip.parquet")
+panel = pd.read_parquet("data/parquet/panel.parquet")
+panel = panel[(panel["date"] >= "2023-01-01") & (panel["date"] <= "2025-06-01")]
 
-print(ic_summary(cross_section_ic(panel, "combined", "forward_5")))
-print(ic_summary(cross_section_ic(panel, "zlema_dev", "forward_5")))
-print(ic_summary(cross_section_ic(panel, "vol_ratio", "forward_5")))
+
+def one(df, code="600519.SS"):
+    """取单只标的，转成 efincharts 需要的宽表。"""
+    x = df[df["code"] == code].sort_values("date").set_index("date")
+    x.columns = [c.capitalize() for c in x.columns]
+    return x
+
+d = panel.copy()
+
+# 1. 本章因子
+d = ettr.zlema(d, n=20)
+d["f1"] = d["ZLEMA_20"] / d.close - 1
+
+# 2. 配一个量价因子做对照
+d = ettr.cmf(d, n=20)
+d["f2"] = d["CMF_20"]
+d = efc.add_next_return(d, periods=(5,))
+
+# 3. 单因子与等权组合的信息比率
+ic = efc.ic_analysis(d, factor_cols=["f1", "f2"], forward_cols=["forward_5"],
+                      method="spearman")
+d = efc.equal_weighted_composite(d, factor_cols=["f1", "f2"], new_col="f1_f2")
+ic2 = efc.ic_analysis(d, factor_cols=["f1_f2"], forward_cols=["forward_5"],
+                      method="spearman")
+ic.update(ic2)
+print(efc.ir_analysis(ic).round(3))
 ```
 
 ```python
-# 组合的择时验证（沿用第 007 章定义的 timing_backtest）
-df = panel[panel["code"] == "600519.SS"].copy()
+import pandas as pd
+import ettr
+import efactorcraft as efc
+import efincharts as efc_
 
-# 去滞后价格：2 * 当日价格 - lag 日前价格，lag 取 (n - 1) / 2 向下取整
-df["d"] = 2 * df["close"] - df["close"].shift(9)
-df["zlema20"] = df["d"].ewm(span=20, adjust=False).mean()
-df["ema20"] = df["close"].ewm(span=20, adjust=False).mean()
-df["zlema_dev"] = df["close"] / df["zlema20"] - 1
-df["zl_gap"] = df["zlema20"] / df["ema20"] - 1
-# 组合条件：价格在去滞后均线上方，且去滞后量为正
-df["cond"] = ((df["zlema_dev"] > 0) & (df["zl_gap"] > 0)).astype(int)
+# 中文字体：mplfinance 会用 style 里的 rc 覆盖全局设置，必须写进 style
+from efincharts import theme
+theme.efin_style["rc"] = {
+    "font.sans-serif": ["PingFang SC", "Heiti SC", "SimHei"],
+    "axes.unicode_minus": False,
+    "font.family": "sans-serif",
+}
 
-print("--- 组合条件 ---")
-print(timing_backtest(df, "cond", "forward_5", entry_q=0.5))
+# 本地数据由 xquant-db 导出，字段见 data/README.md
+blue = pd.read_parquet("data/parquet/panel_blue_chip.parquet")
+panel = pd.read_parquet("data/parquet/panel.parquet")
+panel = panel[(panel["date"] >= "2023-01-01") & (panel["date"] <= "2025-06-01")]
 
-# 单条件对照
-df["cond_dev"] = (df["zlema_dev"] > 0).astype(int)
-df["cond_gap"] = (df["zl_gap"] > 0).astype(int)
 
-print("\n--- 仅偏离度 ---")
-print(timing_backtest(df, "cond_dev", "forward_5", entry_q=0.5))
+def one(df, code="600519.SS"):
+    """取单只标的，转成 efincharts 需要的宽表。"""
+    x = df[df["code"] == code].sort_values("date").set_index("date")
+    x.columns = [c.capitalize() for c in x.columns]
+    return x
 
-print("\n--- 仅去滞后量 ---")
-print(timing_backtest(df, "cond_gap", "forward_5", entry_q=0.5))
+d = panel.copy()
+
+# 1. 本章因子
+d = ettr.zlema(d, n=20)
+d["f1"] = d["ZLEMA_20"] / d.close - 1
+
+# 2. 配一个量价因子做对照
+d = ettr.cmf(d, n=20)
+d["f2"] = d["CMF_20"]
+d = efc.add_next_return(d, periods=(5,))
+
+# 3. 单因子与等权组合的信息比率
+ic = efc.ic_analysis(d, factor_cols=["f1", "f2"], forward_cols=["forward_5"],
+                      method="spearman")
+d = efc.equal_weighted_composite(d, factor_cols=["f1", "f2"], new_col="f1_f2")
+ic2 = efc.ic_analysis(d, factor_cols=["f1_f2"], forward_cols=["forward_5"],
+                      method="spearman")
+ic.update(ic2)
+print(efc.ir_analysis(ic).round(3))
 ```
 
 三行输出并排读：组合高于两者为互补，居中为平均，低于两者为冲突。相关高时，后两种情形更常见。

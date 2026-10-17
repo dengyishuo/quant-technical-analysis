@@ -23,6 +23,10 @@ Rplots.pdf
 # 本地数据导出中间件（scripts/export_from_db.R 会自动重建）
 data/staging/
 
+# 代码运行的中间产物：控制台输出与执行清单，不入库
+# 图表要入库，否则电子书没法内联
+assets/run/
+
 # 本地生成物
 电子书/*.html
 

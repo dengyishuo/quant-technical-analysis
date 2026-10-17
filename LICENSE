@@ -1,0 +1,61 @@
+# 授权
+
+本仓库包含两种性质的内容，分别授权。
+
+## 一、正文与图表
+
+适用范围：`模块01` 至 `模块09` 下的全部 Markdown 章节与其中的图表、公式、表格。
+
+授权方式：**知识共享 署名-非商业性使用-相同方式共享 4.0 国际**（CC BY-NC-SA 4.0）。
+
+可以做的事：
+
+- 自由阅读、复制、分发
+- 改编、改写、用于教学
+- 引用其中的观点与数据，注明来源
+
+需要遵守的条件：
+
+- **署名**：注明作者与出处（本仓库地址）
+- **非商业**：不得直接用于商业目的。出版、付费课程、付费社群、商业培训需另行取得授权
+- **相同方式共享**：改编后的作品须以同样的协议发布
+
+协议全文：https://creativecommons.org/licenses/by-nc-sa/4.0/deed.zh
+
+## 二、代码
+
+适用范围：`code/` 下的全部 `.R` 与 `.py` 文件，`scripts/` 下的全部脚本，以及正文中的代码块。
+
+授权方式：**MIT License**
+
+```
+Copyright (c) 2026 邓一硕
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+## 三、数据
+
+适用范围：`data/parquet/` 下的全部数据文件。
+
+原始行情数据的权利归数据提供方。本仓库中的文件是为配合本书示例而派生的加工结果，随正文一同按 CC BY-NC-SA 4.0 提供，仅供学习与研究使用，不构成任何投资建议，也不保证数据的准确性、完整性或时效性。
+
+## 四、免责
+
+本书与代码用于方法与工程演示。任何基于本书内容构造的策略，其盈亏由使用者自行承担。作者不对使用本书内容造成的任何直接或间接损失负责。

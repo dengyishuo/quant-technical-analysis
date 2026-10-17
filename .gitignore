@@ -1,0 +1,43 @@
+# 系统与编辑器
+.DS_Store
+._*
+Thumbs.db
+*.swp
+*~
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+.venv/
+venv/
+
+# R
+.Rhistory
+.RData
+.Rproj.user/
+*.Rproj
+Rplots.pdf
+
+# 本地数据导出中间件（scripts/export_from_db.R 会自动重建）
+data/staging/
+
+# 本地生成物
+电子书/*.html
+
+# 工程内部文档，不面向读者
+AI-CONTEXT.md
+内容审计报告.md
+_refs/
+
+# 历史归档：旧 Rmd 源、bookdown 产物、改动前备份
+_archive-rmd/
+
+# 凭据（绝不提交）
+.Renviron
+.Renviron.*
+!.Renviron.example
+*.pem
+.env
+.env.*

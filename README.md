@@ -100,7 +100,31 @@ ic_analysis(d, factor_cols = "f")    # R 同口径
 
 ### 数据
 
-书中所有代码读本地文件，不联网抓数据。数据从本地 MySQL 库 `strategy_monitor`（仓库 `XQuant-DB`）导出，两级规模：
+**每段代码都自带取数逻辑，复制就能跑，不需要先准备数据。** 取数函数按「本地 → 缓存 → 远程」的顺序查找：
+
+```
+1. ./data/parquet/xxx       有就直接用，不联网
+2. ~/.cache/qta/xxx         有就用缓存（R 走 tools::R_user_dir("qta","cache")）
+3. 都没有                    从 GitHub 下载一次，写入缓存
+```
+
+| 情形 | 行为 | 首次耗时 |
+|---|---|---|
+| 克隆了整个仓库 | 读本地文件 | 即时 |
+| 只复制了代码片段 | 自动下载（约 25 MB） | 约 20 秒 |
+| 跑过一次 | 命中缓存，断网可用 | 即时 |
+
+想彻底离线，可以只拉 40 MB 的数据而不拉正文：
+
+```bash
+git clone --depth 1 --filter=blob:none --sparse \
+  https://github.com/dengyishuo/quant-technical-analysis.git qta
+cd qta && git sparse-checkout set data
+```
+
+拿到数据后的本地读取写法、字段对照、常见坑（`date` 必须转 Date、路径相对工作目录等）见 **[数据使用说明.md](数据使用说明.md)**。
+
+数据从本地 MySQL 库 `strategy_monitor`（仓库 `XQuant-DB`）导出，两级规模：
 
 | 文件 | 规模 | 用途 |
 |---|---|---|

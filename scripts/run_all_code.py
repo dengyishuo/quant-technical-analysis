@@ -121,8 +121,11 @@ def run_chapter(path: pathlib.Path, timeout: int, verbose: bool):
 
     fig_dir = FIG_DIR / ("ch%03d" % ch)
     fig_dir.mkdir(parents=True, exist_ok=True)
-    for old in fig_dir.glob("*.png"):
-        old.unlink()
+    # 只清本 runner 自己产出的图。indicator_r.png 是 R 侧生成的，
+    # 早先这里按 *.png 全删，把 R 的图一并清掉了。
+    for pat in ("fig*.png", "indicator.png"):
+        for old in fig_dir.glob(pat):
+            old.unlink()
 
     blocks = [(lang, body, ln) for lang, body, ln in split_blocks(text) if lang == "python"]
     if not blocks:

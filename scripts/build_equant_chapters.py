@@ -28,7 +28,10 @@ FIG = "assets/figures"
 
 # ────────────────────────── Python 模板 ──────────────────────────
 
-PY_PREREQ = '''import pandas as pd
+PY_PREREQ = '''import pathlib
+import urllib.request
+
+import pandas as pd
 import ettr
 import efactorcraft as efc
 import efincharts as efc_
@@ -41,10 +44,39 @@ theme.efin_style["rc"] = {
     "font.family": "sans-serif",
 }
 
-# 本地数据由 xquant-db 导出，字段见 data/README.md
-blue = pd.read_parquet("data/parquet/panel_blue_chip.parquet")
-panel = pd.read_parquet("data/parquet/panel.parquet")
+BASE = "https://raw.githubusercontent.com/dengyishuo/quant-technical-analysis/main/data/parquet"
+CACHE = pathlib.Path.home() / ".cache" / "qta"
+_MEM = {}
+
+
+def load(name):
+    """取数据：本地有就用本地，没有就下载一次并缓存。
+
+    这样三种情形都能跑：
+      1. 克隆了整个仓库    -> 直接读 data/parquet/，不联网
+      2. 只复制了代码片段  -> 首次自动下载到 ~/.cache/qta，之后走缓存
+      3. 之前跑过          -> 全部命中缓存，断网也能用
+    """
+    if name in _MEM:
+        return _MEM[name]
+    local = pathlib.Path("data/parquet") / name
+    if local.exists():
+        path = local
+    else:
+        CACHE.mkdir(parents=True, exist_ok=True)
+        path = CACHE / name
+        if not path.exists():
+            print("下载 %s ..." % name)
+            urllib.request.urlretrieve(BASE + "/" + name, path)
+    data = pd.read_parquet(path) if name.endswith(".parquet") else pd.read_csv(path)
+    _MEM[name] = data
+    return data
+
+
+blue = load("panel_blue_chip.parquet")
+panel = load("panel.parquet")
 panel = panel[(panel["date"] >= "2023-01-01") & (panel["date"] <= "2025-06-01")]
+idx = load("index_daily.parquet")
 
 
 def one(df, code="600519.SS"):
@@ -52,6 +84,13 @@ def one(df, code="600519.SS"):
     x = df[df["code"] == code].sort_values("date").set_index("date")
     x.columns = [c.capitalize() for c in x.columns]
     return x
+
+
+def fig_path(ch, name="indicator.png"):
+    """图的保存路径，顺手建目录，避免读者本地没有 assets/ 时报错。"""
+    d = pathlib.Path("assets") / "figures" / ("ch%03d" % ch)
+    d.mkdir(parents=True, exist_ok=True)
+    return str(d / name)
 '''
 
 
@@ -76,7 +115,7 @@ def py_indicator_block(s: dict) -> str:
     lines.append("# 3. 画图：K 线 + 成交量 + 指标面板")
     lines.append('px = one(maotai)')
     lines.append('ch = efc_.candlestick(px, volume=True, title="贵州茅台 · %s")' % s["name"])
-    lines.append('ch.save("%s/ch%03d/indicator.png")' % (FIG, s["ch"]))
+    lines.append('ch.save(fig_path(%d))' % s["ch"])
     return "\n".join(lines)
 
 
@@ -161,9 +200,7 @@ def py_timing_block(s: dict) -> str:
     col = s["py_col"]
     lines = [PY_PREREQ]
     lines.append('# 择时检验用 ETF 做市场载体，指数本身没有日线数据')
-    lines.append('idx = pd.read_parquet("data/parquet/index_daily.parquet")')
-    lines.append('idx = idx[idx["code"] == "510300.SS"].sort_values("date")')
-    lines.append("t = idx.copy()")
+    lines.append('t = idx[idx["code"] == "510300.SS"].sort_values("date").copy()')
     lines.append("")
     lines.append("# 1. 在 ETF 上算同一个指标")
     body = []
@@ -238,29 +275,52 @@ library(efactorcraft)
 library(efincharts)
 library(ggplot2)
 
-# 本地数据由 xquant-db 导出，字段见 data/README.md
-# 同一章会多次用到这两份数据，这里读一次缓存起来，避免反复解压
+BASE <- "https://raw.githubusercontent.com/dengyishuo/quant-technical-analysis/main/data/parquet"
+
+# 取数据：本地有就用本地，没有就下载一次并缓存。
+# read.csv 对本地 .gz 会自动解压，所以缓存成 .csv.gz 也能直接读。
+load_data <- function(name) {
+  local <- file.path("data", "parquet", name)
+  if (file.exists(local)) return(local)
+  cache <- file.path(tools::R_user_dir("qta", "cache"), name)
+  if (!file.exists(cache)) {
+    dir.create(dirname(cache), recursive = TRUE, showWarnings = FALSE)
+    message("下载 ", name, " ...")
+    download.file(paste0(BASE, "/", name), cache, mode = "wb", quiet = TRUE)
+  }
+  cache
+}
+
+read_data <- function(name) {
+  d <- read.csv(load_data(name), stringsAsFactors = FALSE)
+  if ("date" %in% names(d)) d$date <- as.Date(d$date)
+  d
+}
+
+# 同一章里多次取用，缓存到内存，避免重复解析
 .cache <- new.env(parent = emptyenv())
 .blue <- function() {
-  if (!exists("b", .cache)) {
-    b <- read.csv("data/parquet/panel_blue_chip.csv", stringsAsFactors = FALSE)
-    b$date <- as.Date(b$date)
-    assign("b", b, .cache)
-  }
+  if (!exists("b", .cache)) assign("b", read_data("panel_blue_chip.csv"), .cache)
   get("b", .cache)
 }
 .panel <- function() {
   if (!exists("p", .cache)) {
-    # 287 只的完整面板压成 gz，read.csv 支持 gz
-    p <- read.csv("data/parquet/panel_r.csv.gz", stringsAsFactors = FALSE)
-    p$date <- as.Date(p$date)
-    p <- p[p$date >= "2023-01-01" & p$date <= "2025-06-01", ]
-    assign("p", p, .cache)
+    p <- read_data("panel_r.csv.gz")
+    assign("p", p[p$date >= "2023-01-01" & p$date <= "2025-06-01", ], .cache)
   }
   get("p", .cache)
 }
+.index <- function() read_data("index_daily.csv")
+
 blue  <- .blue()
 panel <- .panel()
+
+# 图的保存路径，顺手建目录，避免读者本地没有 assets/ 时报错
+fig_path <- function(ch, name = "indicator_r.png") {
+  d <- file.path("assets", "figures", sprintf("ch%03d", ch))
+  dir.create(d, recursive = TRUE, showWarnings = FALSE)
+  file.path(d, name)
+}
 
 # efincharts 要求 xts 且列名带 Adjusted
 as_xts <- function(df) {
@@ -302,8 +362,7 @@ def r_indicator_block(s: dict) -> str:
     lines.append("# 3. K 线 + 成交量 + 均线")
     lines.append('ch <- ecandlesticks(as_xts(maotai), show_ma = TRUE, ma_periods = c(20, 60),')
     lines.append('                    title = "贵州茅台 · %s")' % s["name"])
-    lines.append('ggsave("%s/ch%03d/indicator_r.png", ch$combined_plot,' % (FIG, s["ch"]))
-    lines.append("       width = 10, height = 6, dpi = 110)")
+    lines.append('ggsave(fig_path(%d), ch$combined_plot, width = 10, height = 6, dpi = 110)' % s["ch"])
     return "\n".join(lines)
 
 
@@ -362,9 +421,8 @@ def r_ic_block(s: dict) -> str:
 
 def r_timing_block(s: dict) -> str:
     lines = [R_PREREQ]
-    lines.append('idx <- read.csv("data/parquet/index_daily.csv", stringsAsFactors = FALSE)')
-    lines.append("idx$date <- as.Date(idx$date)")
-    lines.append('t <- idx[idx$code == "510300.SS", ]')
+    lines.append('t <- .index()')
+    lines.append('t <- t[t$code == "510300.SS", ]')
     lines.append(r_calls(s, "t"))
     pre = s.get("pre")
     if pre == "py_dma":

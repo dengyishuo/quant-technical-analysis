@@ -139,6 +139,18 @@ def esc(s):
     )
 
 
+# 各章图例名，与图上方那行小字对应
+IND_LABEL = {
+    9: "SMA(20)", 10: "EMA(12)", 11: "WMA(10)", 12: "DEMA(20)", 13: "ZLEMA(20)",
+    14: "DMA（快慢均线差）", 15: "BBI(3/6/12/24)", 16: "MACD 柱",
+    17: "DI+ − DI−", 18: "ADX(14)", 19: "SAR",
+    21: "RSI(14)", 22: "KDJ 之 J", 23: "CCI(20)", 24: "WPR(14)", 25: "ROC(12)",
+    26: "CMO(14)", 27: "DPO(20)", 28: "SMI",
+    30: "ATR(14) / 价格", 31: "历史波动率(20)", 32: "布林 %B",
+    33: "肯特纳中轨", 34: "包络基准线 SMA(20)",
+    36: "OBV 10 日变化率", 37: "CMF(20)", 38: "成交量震荡器", 39: "EVWMA(10)",
+}
+
 IMG_RE = re.compile(r'<img\s+([^>]*?)src="([^"]+)"([^>]*?)>', re.I)
 
 
@@ -170,12 +182,57 @@ def inline_images(html):
     return IMG_RE.sub(repl, html)
 
 
+# 指标章的图块：把静态图包进交互容器，两者共存
+FIG_BLOCK_RE = re.compile(
+    r"<!-- fig-indicator:start -->(.*?)<!-- fig-indicator:end -->", re.S)
+CH_IN_PATH_RE = re.compile(r"ch(\d{3})/indicator\.png")
+
+
+def wrap_interactive_charts(html):
+    """把 fig-indicator 图块改成交互容器 + 静态图。
+
+    屏幕上看可缩放拖动的交互图，打印/PDF 时显示静态图，
+    JS 出错时也自动退回静态图。静态图始终在 DOM 里，
+    所以同一份 HTML 既能当网页读，也能直接打印或转成 PDF、EPUB。
+
+    必须在 inline_images 之前调用：此时 img 的 src 还是路径，
+    可以从中取出章号。
+    """
+    def repl(m):
+        block = m.group(1)
+        hit = CH_IN_PATH_RE.search(block)
+        if not hit:
+            return m.group(0)
+        ch = int(hit.group(1))
+        # 取出原来的 img 与图注
+        img = re.search(r"<img[^>]*>", block)
+        cap_in_block = re.search(r'<p class="figcap">(.*?)</p>', block, re.S)
+        img_html = img.group(0) if img else ""
+        cap_html = ('<p class="figcap">%s</p>' % cap_in_block.group(1)
+                    if cap_in_block else "")
+        return (
+            '<div class="chart-shell" data-ch="%d">\n'
+            '  <div class="chart-bar">'
+            '<span class="cb-sym">600519.SS 贵州茅台</span>'
+            '<span class="cb-ind">%s</span>'
+            '<span class="cb-hint">拖动平移 · 滚轮缩放</span>'
+            '</div>\n'
+            '  <div class="chart-live"><div class="ch-loading">图表加载中…</div></div>\n'
+            '  <div class="chart-static">%s</div>\n'
+            '</div>\n%s' % (ch, IND_LABEL.get(ch, ""), img_html, cap_html)
+        )
+
+    return FIG_BLOCK_RE.sub(repl, html)
+
+
 def render_body(raw):
     """Markdown 正文 -> HTML（含引导词与公式保护）。"""
     protected, store = protect(raw)
     html = md_to_html(protected)
     html = restore(html, store)
-    # 图片内联，保持单文件可分发性
+    # 先把静态图包进交互容器（此时 src 还是路径）
+    html = wrap_interactive_charts(html)
+    # 再内联图片，保持单文件可分发性
     html = inline_images(html)
     # 站外链接新窗口打开
     html = html.replace('<a href="http', '<a target="_blank" rel="noopener" href="http')
@@ -630,6 +687,8 @@ MathJax = {
 };
 </script>
 <script>__MATHJAX__</script>
+<!-- 交互图：TradingView Lightweight Charts（Apache 2.0），内联以支持离线 -->
+<script>__LWC__</script>
 </head>
 <body>
 
@@ -681,6 +740,9 @@ MathJax = {
   </div>
 </section>
 
+<!-- 打印时填入全部章节：单页应用直接打印只会输出当前一屏 -->
+<main id="print-all"></main>
+
 <aside id="drawer" class="drawer">
   <div class="drawer-head"><span>目录</span><button class="icon-btn" id="close-drawer">✕</button></div>
   <nav id="drawer-list" class="drawer-list"></nav>
@@ -688,7 +750,9 @@ MathJax = {
 <div id="scrim" class="scrim"></div>
 
 <script id="book-data" type="application/json">__BOOK_DATA__</script>
+<script id="chart-data" type="application/json">__CHART_DATA__</script>
 <script>__JS__</script>
+<script>__CHART_JS__</script>
 </body>
 </html>
 """
@@ -714,11 +778,30 @@ def main():
             % mathjax_path.relative_to(ROOT))
     mathjax = mathjax_path.read_text(encoding="utf-8")
 
+    # 交互图：库与数据一并内联，离线可用
+    lwc_path = ROOT / "电子书" / "vendor" / "lightweight-charts.standalone.production.js"
+    chart_js_path = ROOT / "电子书" / "chart-script.js"
+    chart_css_path = ROOT / "电子书" / "chart-style.css"
+    chart_data_path = ROOT / "电子书" / "chart-data.json"
+    for need in (lwc_path, chart_js_path, chart_css_path, chart_data_path):
+        if not need.exists():
+            raise SystemExit(
+                "缺少 %s。交互图需要先执行 scripts/build_chart_data.py，"
+                "并确认 电子书/vendor/ 里有图表库。" % need.relative_to(ROOT))
+
+    lwc = lwc_path.read_text(encoding="utf-8")
+    chart_js = chart_js_path.read_text(encoding="utf-8")
+    chart_css = chart_css_path.read_text(encoding="utf-8")
+    chart_data = chart_data_path.read_text(encoding="utf-8").replace("</", "<\\/")
+
     html = (
         TEMPLATE
-        .replace("__CSS__", CSS)
+        .replace("__CSS__", CSS + "\n" + chart_css)
         .replace("__JS__", JS)
         .replace("__MATHJAX__", mathjax)
+        .replace("__LWC__", lwc)
+        .replace("__CHART_JS__", chart_js)
+        .replace("__CHART_DATA__", chart_data)
         .replace("__BOOK_DATA__", data)
         .replace("__TITLE__", TITLE)
         .replace("__SUBTITLE__", SUBTITLE)

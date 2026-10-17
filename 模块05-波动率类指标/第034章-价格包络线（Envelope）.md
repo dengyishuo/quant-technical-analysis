@@ -198,6 +198,12 @@ theme.efin_style["rc"] = {
     "font.family": "sans-serif",
 }
 
+# A 股习惯是涨红跌绿，efincharts 的默认配色沿用了欧美习惯（涨绿跌红），
+# 这里改回来，也让静态图与网页上的交互图、R 侧的图保持一致。
+_mc = theme.efin_style["marketcolors"]
+for _k in ("candle", "edge", "wick", "volume"):
+    _mc[_k] = {"up": "#e53935", "down": "#26a69a"}
+
 BASE = "https://raw.githubusercontent.com/dengyishuo/quant-technical-analysis/main/data/parquet"
 CACHE = pathlib.Path.home() / ".cache" / "qta"
 _MEM = {}
@@ -382,6 +388,12 @@ theme.efin_style["rc"] = {
     "font.family": "sans-serif",
 }
 
+# A 股习惯是涨红跌绿，efincharts 的默认配色沿用了欧美习惯（涨绿跌红），
+# 这里改回来，也让静态图与网页上的交互图、R 侧的图保持一致。
+_mc = theme.efin_style["marketcolors"]
+for _k in ("candle", "edge", "wick", "volume"):
+    _mc[_k] = {"up": "#e53935", "down": "#26a69a"}
+
 BASE = "https://raw.githubusercontent.com/dengyishuo/quant-technical-analysis/main/data/parquet"
 CACHE = pathlib.Path.home() / ".cache" / "qta"
 _MEM = {}
@@ -553,6 +565,12 @@ theme.efin_style["rc"] = {
     "axes.unicode_minus": False,
     "font.family": "sans-serif",
 }
+
+# A 股习惯是涨红跌绿，efincharts 的默认配色沿用了欧美习惯（涨绿跌红），
+# 这里改回来，也让静态图与网页上的交互图、R 侧的图保持一致。
+_mc = theme.efin_style["marketcolors"]
+for _k in ("candle", "edge", "wick", "volume"):
+    _mc[_k] = {"up": "#e53935", "down": "#26a69a"}
 
 BASE = "https://raw.githubusercontent.com/dengyishuo/quant-technical-analysis/main/data/parquet"
 CACHE = pathlib.Path.home() / ".cache" / "qta"
@@ -757,6 +775,12 @@ theme.efin_style["rc"] = {
     "axes.unicode_minus": False,
     "font.family": "sans-serif",
 }
+
+# A 股习惯是涨红跌绿，efincharts 的默认配色沿用了欧美习惯（涨绿跌红），
+# 这里改回来，也让静态图与网页上的交互图、R 侧的图保持一致。
+_mc = theme.efin_style["marketcolors"]
+for _k in ("candle", "edge", "wick", "volume"):
+    _mc[_k] = {"up": "#e53935", "down": "#26a69a"}
 
 BASE = "https://raw.githubusercontent.com/dengyishuo/quant-technical-analysis/main/data/parquet"
 CACHE = pathlib.Path.home() / ".cache" / "qta"
@@ -1015,6 +1039,12 @@ theme.efin_style["rc"] = {
     "font.family": "sans-serif",
 }
 
+# A 股习惯是涨红跌绿，efincharts 的默认配色沿用了欧美习惯（涨绿跌红），
+# 这里改回来，也让静态图与网页上的交互图、R 侧的图保持一致。
+_mc = theme.efin_style["marketcolors"]
+for _k in ("candle", "edge", "wick", "volume"):
+    _mc[_k] = {"up": "#e53935", "down": "#26a69a"}
+
 BASE = "https://raw.githubusercontent.com/dengyishuo/quant-technical-analysis/main/data/parquet"
 CACHE = pathlib.Path.home() / ".cache" / "qta"
 _MEM = {}
@@ -1100,6 +1130,12 @@ theme.efin_style["rc"] = {
     "axes.unicode_minus": False,
     "font.family": "sans-serif",
 }
+
+# A 股习惯是涨红跌绿，efincharts 的默认配色沿用了欧美习惯（涨绿跌红），
+# 这里改回来，也让静态图与网页上的交互图、R 侧的图保持一致。
+_mc = theme.efin_style["marketcolors"]
+for _k in ("candle", "edge", "wick", "volume"):
+    _mc[_k] = {"up": "#e53935", "down": "#26a69a"}
 
 BASE = "https://raw.githubusercontent.com/dengyishuo/quant-technical-analysis/main/data/parquet"
 CACHE = pathlib.Path.home() / ".cache" / "qta"

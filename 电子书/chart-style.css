@@ -1,0 +1,72 @@
+/* ============================================================
+   交互图（TradingView Lightweight Charts）
+   屏幕上看可缩放拖动的图；打印/PDF 时自动换回静态图；
+   JS 出错时也退回静态图，不会留下空白。
+   ============================================================ */
+.chart-shell{
+  margin:1.6rem 0 .4rem;
+  border:1px solid var(--rule);border-radius:8px;
+  background:#fff;overflow:hidden;
+}
+.chart-bar{
+  display:flex;align-items:center;gap:.7rem;
+  padding:.5rem .9rem;border-bottom:1px solid var(--rule);
+  background:var(--paper-2);font-family:var(--sans);font-size:.8rem;
+  color:var(--muted);
+}
+.chart-bar .cb-sym{font-weight:600;color:var(--ink)}
+.chart-bar .cb-ind{color:var(--ink-2)}
+.chart-bar .cb-hint{margin-left:auto;font-size:.74rem;opacity:.75}
+.chart-live{height:440px;width:100%;position:relative}
+.chart-live .ch-loading{
+  position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+  color:var(--muted);font-size:.84rem;font-family:var(--sans);
+}
+/* 屏幕：交互图可见，静态图隐藏 */
+.chart-static{display:none}
+/* 图表初始化失败时，退回静态图 */
+.chart-shell.chart-failed .chart-live{display:none}
+.chart-shell.chart-failed .chart-static{display:block}
+
+@media print{
+  .chart-live{display:none !important}
+  .chart-static{display:block !important}
+  .chart-bar{display:none}
+  .chart-shell{border:0;background:transparent;margin:1rem 0 .2rem}
+}
+@media (max-width:640px){
+  .chart-live{height:330px}
+  .chart-bar .cb-hint{display:none}
+}
+/* 夜间模式：图表底色跟着换，K 线颜色在 JS 里按主题重绘 */
+[data-theme="night"] .chart-shell{background:#15181d;border-color:var(--rule)}
+[data-theme="night"] .chart-bar{background:#1a1e24}
+
+/* ============================================================
+   打印 / 存为 PDF
+   这本书是单页应用（内部滚动），直接 Cmd+P 只会打出当前一屏。
+   打印前把全部章节铺进 #print-all，静态图随之出场，
+   K 线图在纸面上依然清楚。
+   ============================================================ */
+#print-all{display:none}
+
+@media print{
+  @page{margin:16mm 14mm}
+  html,body{height:auto !important;overflow:visible !important;background:#fff !important}
+  .topbar,.drawer,.scrim,#view-cover,#view-toc,.chapnav,.reader-scroll,
+  #reader-scroll,#progress,.theme-toggle,.icon-btn,.prompt button{display:none !important}
+  #view-reader{position:static !important;display:block !important;height:auto !important;overflow:visible !important}
+  #print-all{display:block !important}
+  #print-all .print-ch{
+    page-break-after:always;break-after:page;
+    padding:0;max-width:none;
+  }
+  #print-all .print-ch:last-child{page-break-after:auto;break-after:auto}
+  /* 章节开头另起一页，标题不与正文分家 */
+  #print-all h1,#print-all h2,#print-all h3{break-after:avoid;page-break-after:avoid}
+  #print-all h2{break-before:auto}
+  #print-all pre,#print-all table,#print-all .chart-shell{break-inside:avoid;page-break-inside:avoid}
+  #print-all table{font-size:.82rem}
+  #print-all pre{font-size:.76rem;white-space:pre-wrap;word-break:break-word}
+  #print-all a{color:inherit;text-decoration:none}
+}

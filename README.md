@@ -96,9 +96,36 @@ ic_analysis(d, factor_cols = "f")    # R 同口径
 | `电子书/build_ebook.py` | 编译脚本。运行时会在 `电子书/` 下另存一份同名 HTML（不入库，避免与 docs 重复 1.6 MB） |
 | `code/` | 全部代码的独立可运行版本，`code/README.md` 是索引 |
 | `data/parquet/` | 书中全部示例数据，`data/README.md` 是字段与口径说明 |
-| `assets/figures/` | 各章指标图，编译时内联进 HTML |
+| `assets/figures/` | 各章指标图（PNG），网页内联、EPUB 打包、打印都用它 |
+| `电子书/vendor/` | 内联用的引擎：MathJax 的 tex-svg、Lightweight Charts |
 
-### 数据
+### 三种读法
+
+同一份 Markdown 源，出三种成品：
+
+| 形态 | 产物 | 图表 |
+|---|---|---|
+| 网页 | `电子书/量化投资视角的技术分析.html` | 可缩放拖动的交互图，K 线 + 成交量 + 该章指标 |
+| PDF | 浏览器 Cmd/Ctrl + P 直接存 | 自动换成静态图，全分辨率 |
+| EPUB | `电子书/量化投资视角的技术分析.epub` | 静态图 + MathML 公式 |
+
+```bash
+python3 scripts/build_chart_data.py      # 生成图表数据（改了指标才需要）
+python3 电子书/build_ebook.py            # 出网页与 Pages 版
+bash 电子书/make_epub.sh                 # 出 EPUB（需 pandoc）
+```
+
+### 交互图
+
+用的是 TradingView 的 Lightweight Charts（Apache 2.0，193 KB），三窗格布局：K 线、成交量、指标。与本章指标同量纲的画在 K 线窗格里叠加，不同量纲的单独开窗格。
+
+28 章共用同一份行情（贵州茅台，581 根 K 线），只各存一条指标序列，所以整包只有 163 KB。
+
+**不联网也能用。** 图表库和 MathJax 都内联在 HTML 里，双击打开即可，不依赖任何 CDN。
+
+**静态图始终在页面里**，只是屏幕上被 CSS 隐藏。这样三件事同时成立：打印时自动换回静态图、JS 出错时自动降级、EPUB 有图可用。
+
+## 数据
 
 **每段代码都自带取数逻辑，复制就能跑，不需要先准备数据。** 取数函数按「本地 → 缓存 → 远程」的顺序查找：
 

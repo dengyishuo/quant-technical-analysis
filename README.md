@@ -2,6 +2,8 @@
 
 > AI 时代技术分析新视角
 
+**[在线读](https://dengyishuo.github.io/quant-technical-analysis/)** · 54 章 · 80 万字 · 231 组 R/Python 双语代码
+
 一本按"讲原理 → 拆解特征 → 检验能力 → 建模融合"四层递进组织的中文技术分析书稿。源稿为纯 Markdown，编译为**单文件 HTML 电子书**（封面／目录／逐章阅读／夜间模式／键盘翻页）。
 
 - **规模**：9 个模块 · 54 章 · 141 条 AI 引导词 · 231 组 R/Python 双语代码 · 约 80 万字
@@ -18,15 +20,17 @@
 电子书是单文件 HTML，三种看法：
 
 1. 直接打开 `docs/index.html`
-2. 仓库 Settings → Pages，Source 选 `main` / `docs`，之后可用 `https://<用户名>.github.io/quant-technical-analysis/`
+2. 已开启 GitHub Pages（`main` 分支的 `/docs`），地址为 <https://dengyishuo.github.io/quant-technical-analysis/>
 3. 克隆后自己编译一份（见下）
+
+在线版：<https://dengyishuo.github.io/quant-technical-analysis/>
 
 ---
 
 ## 快速开始
 
 ```bash
-git clone https://github.com/<用户名>/quant-technical-analysis.git
+git clone https://github.com/dengyishuo/quant-technical-analysis.git
 cd quant-technical-analysis
 
 # 编译电子书（源稿改动后重新运行即可）
